@@ -226,6 +226,7 @@ function pushRecent(path) {
 }
 function renderRecent() {
   const wrap = $("recent-folders");
+  if (!wrap) return;
   const rs = loadRecent();
   wrap.innerHTML = "";
   if (!rs.length) return;

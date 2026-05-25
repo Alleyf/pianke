@@ -3737,12 +3737,28 @@ def api_watermark_cancel():
 
 @app.route("/api/watermark/open_out_dir", methods=["POST"])
 def api_watermark_open_out_dir():
-    """打开水印输出目录。"""
-    if WATERMARK_JOB is None or not WATERMARK_JOB.out_dir:
-        return jsonify({"error": "no output dir"}), 400
-    target = Path(WATERMARK_JOB.out_dir)
-    if not target.exists():
-        return jsonify({"error": "目录不存在"}), 400
+    """打开水印输出目录；若当前任务记录已丢失，则回退到最近一次导出目录。"""
+    target: Optional[Path] = None
+    if WATERMARK_JOB and WATERMARK_JOB.out_dir:
+        candidate = Path(WATERMARK_JOB.out_dir)
+        if candidate.exists():
+            target = candidate
+
+    if target is None and SESSION is not None:
+        winners = winners_dir(SESSION.folder)
+        if winners.exists():
+            exported_dirs = sorted(
+                [p for p in winners.iterdir() if p.is_dir() and p.name.startswith("watermarked_")],
+                key=lambda p: p.stat().st_mtime,
+                reverse=True,
+            )
+            if exported_dirs:
+                target = exported_dirs[0]
+            else:
+                target = winners
+
+    if target is None or not target.exists():
+        return jsonify({"error": "尚未找到可打开的导出目录"}), 400
     try:
         if sys.platform == "darwin":
             subprocess.Popen(["open", str(target)])
