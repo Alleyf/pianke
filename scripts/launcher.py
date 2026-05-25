@@ -6,7 +6,7 @@
 职责：
 1. 检查 GitHub 是否有新版本，有则拉取覆盖
 2. 询问用户启用哪些模式（首次），按选择装依赖
-3. 启动 app.py，等待退出
+3. 启动桌面应用（失败时自动回退浏览器版），等待退出
 
 约定：
 - 项目根目录 = 本脚本所在目录的父目录
@@ -56,6 +56,7 @@ CORE_PACKAGES = [
     "numpy>=1.26",
     "scipy>=1.11",
     "flask>=3.0",
+    "pywebview>=5.1",
     "imagehash>=4.3",
     "opencv-contrib-python>=4.9",
     # RAW 支持（提取 RAW 内嵌的 JPEG 预览图，无需 demosaic）。
@@ -428,16 +429,23 @@ def ensure_dependencies(modes: list[str], install: dict, force: bool) -> None:
 
 # ---------- 启动 app ----------
 
-def run_app(port: int) -> int:
-    info(f"启动 Flask 服务于 http://localhost:{port}")
+def run_app(port: int, desktop: bool) -> int:
+    if desktop:
+        info("启动桌面应用（内嵌本地服务 + 原生窗口）")
+    else:
+        info(f"启动浏览器版服务于 http://localhost:{port}")
     if "expert" in (load_install().get("modes") or []):
         info("专家模式首次启动会加载 DINOv2/NIMA/InsightFace 模型（约 10-30 秒）...")
         if USE_MIRROR:
             info(f"使用 HuggingFace 镜像 {HF_MIRROR}（如已下载过模型则跳过）")
     print()
     print("=" * 56)
-    print("  服务启动后浏览器会自动打开。")
-    print("  ⚠ 关闭本窗口 = 停止服务。挑完片再关。")
+    if desktop:
+        print("  将优先打开原生桌面窗口。")
+        print("  ⚠ 关闭桌面窗口 = 停止服务。挑完片再关。")
+    else:
+        print("  服务启动后浏览器会自动打开。")
+        print("  ⚠ 关闭本窗口 = 停止服务。挑完片再关。")
     print("=" * 56)
     print()
     env = os.environ.copy()
@@ -445,6 +453,8 @@ def run_app(port: int) -> int:
         # 让 transformers / huggingface_hub 走国内镜像
         env.setdefault("HF_ENDPOINT", HF_MIRROR)
     cmd = [str(PY_IN_VENV), "app.py", "--port", str(port)]
+    if desktop:
+        cmd += ["--desktop", "--no-browser"]
     try:
         return subprocess.call(cmd, cwd=str(ROOT), env=env)
     except KeyboardInterrupt:
@@ -456,7 +466,8 @@ def run_app(port: int) -> int:
 def main() -> int:
     banner("片刻 · 启动器")
     print()
-    print("  本启动器会自动：检查更新 → 选模式 → 装依赖 → 起服务 → 开浏览器")
+    print("  本启动器会自动：检查更新 → 选模式 → 装依赖 → 起桌面应用")
+    print("  若桌面窗口环境不可用，会自动回退为浏览器版。")
     if USE_MIRROR:
         print("  当前已开启国内镜像加速（清华 PyPI + hf-mirror.com）")
         print("  海外网络环境请关闭：export PIANKE_NO_MIRROR=1 后重启")
@@ -486,8 +497,10 @@ def main() -> int:
 
     # 步骤 4：启动
     step(4, 4, "启动应用")
-    port = int(os.environ.get("PIC_SELECTER_PORT", "5057"))
-    rc = run_app(port)
+    desktop = os.environ.get("PIC_SELECTER_DESKTOP", "1") != "0"
+    default_port = "0" if desktop else "5057"
+    port = int(os.environ.get("PIC_SELECTER_PORT", default_port))
+    rc = run_app(port, desktop)
 
     if rc != 0:
         warn(f"app.py 以非零状态退出（{rc}）")

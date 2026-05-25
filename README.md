@@ -3,10 +3,15 @@
 > **让 AI 协助初筛与分组，把最终的审美决定权留给自己。**
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/)
-[![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Windows-lightgrey.svg)](#一键启动推荐)
+[![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey.svg)](#一键启动推荐)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
 **片刻** 是一款专为摄影师和摄影爱好者设计的**本地照片双语/擂台式选片工具**。它能够将一次拍摄中相似的几十甚至上百张照片自动归入“同一个瞬间”的组中，然后通过直观的 **左右 A/B 擂台 PK** 方式，让你快速挑出最满意的一张。
+
+当前仓库同时提供两条桌面路径：
+
+- **轻量预览桌面壳**：直接在本机把现有 Flask + Web 前端嵌进窗口，适合本地快速运行。
+- **正式可安装桌面版（Tauri）**：带原生安装包、可分发、可走 CI 构建，Python 后端会被打成 sidecar 二进制后随桌面应用一起分发。
 
 ---
 
@@ -61,8 +66,9 @@
 | :--- | :--- | :--- |
 | **macOS** | `启动_macOS.command` | 若提示“身份不明的开发者”：**按住 Control 键**点击脚本 ➔ 选择 **打开** ➔ 弹窗中再次点击 **打开**。 |
 | **Windows** | `启动_Windows.bat` | 若弹出“Windows 已保护你的电脑”：点击 **更多信息** ➔ 选择 **仍要运行**。 |
+| **Linux** | `启动_Linux.sh` | 首次运行前执行 `chmod +x 启动_Linux.sh`，若缺少桌面 WebKit/GTK 组件，请按发行版安装。 |
 
-*注：启动器会自动在项目独立目录下下载并构建 Python 环境，不污染你的系统环境。国内用户默认启用 PyPI 和模型镜像，可以使用环境变量 `PIANKE_NO_MIRROR=1` 禁用镜像走官方源。*
+*注：启动器会自动在项目独立目录下下载并构建 Python 环境，不污染你的系统环境。国内用户默认启用 PyPI 和模型镜像，可以使用环境变量 `PIANKE_NO_MIRROR=1` 禁用镜像走官方源。桌面版默认开启；若你只想跑浏览器版，可在启动前设置 `PIC_SELECTER_DESKTOP=0`。*
 
 ### 方式二：手动启动（适合开发者）
 
@@ -76,12 +82,46 @@ source .venv/bin/activate  # Windows: .venv\Scripts\activate
 # 2. 安装项目依赖（包含所有模式的并集）
 pip install -r requirements.txt
 
-# 3. 运行服务（默认端口 5057，自动打开浏览器）
+# 3. 运行桌面版（默认自动分配内嵌端口）
+python app.py --desktop
+
+# 4. 或运行浏览器版（默认端口 5057，自动打开浏览器）
 python app.py
 
 # 常用参数：
+python app.py --desktop --port 0
 python app.py --port 8080 --no-browser
 ```
+
+### 方式三：构建正式桌面安装包（Tauri）
+
+如果你要的是**可以分发给别人安装**的桌面程序，请走这条：
+
+```bash
+# 1. 安装 Python 运行依赖 + 桌面打包依赖
+pip install -r requirements.txt
+pip install -r requirements-desktop-build.txt
+
+# 2. 安装 Node / Tauri 前端壳依赖
+npm install
+
+# 3. 生成 Tauri 图标资源
+python scripts/generate_tauri_icons.py
+
+# 4. 本地开发调试桌面版
+npm run desktop:dev
+
+# 5. 构建安装包 / 分发包
+npm run desktop:build
+```
+
+构建输出位于 `src-tauri/target/release/bundle/`，不同系统会生成各自常见格式：
+
+- Windows：`.msi`、`.exe`
+- macOS：`.app`、`.dmg`
+- Linux：`.deb`、`.AppImage`、`.rpm`（取决于本机环境）
+
+仓库里还带了 GitHub Actions 工作流 [desktop-build.yml](</A:/dashboard/GH_Repos/pianke/.github/workflows/desktop-build.yml:1>)，可用于 Windows / macOS / Linux 三端自动产出安装包。
 
 > ⚠️ **开发模式提示**：若手动安装依赖，可能因传递依赖导致 `opencv-python` 冲突。可运行以下命令修复：
 > ```bash
@@ -157,8 +197,8 @@ python app.py --port 8080 --no-browser
 ## 常见问题 (FAQ)
 
 <details>
-<summary><b>1. 启动后浏览器没有自动打开？</b></summary>
-手动在浏览器中访问 <code>http://localhost:5057</code> 即可。
+<summary><b>1. 启动后没有弹出桌面窗口？</b></summary>
+如果你走的是轻量预览桌面壳，当前系统缺少桌面依赖时程序会自动回退为浏览器版；这时手动访问 <code>http://localhost:5057</code> 即可。若你希望固定走浏览器版，可在启动前设置 <code>PIC_SELECTER_DESKTOP=0</code>。如果你要真正可安装分发的桌面程序，请使用上面的 Tauri 构建流程。
 </details>
 
 <details>
@@ -168,7 +208,7 @@ python app.py --port 8080 --no-browser
   <li>macOS: <code>export PIC_SELECTER_PORT=8080</code></li>
   <li>Windows: <code>set PIC_SELECTER_PORT=8080</code></li>
 </ul>
-后再运行启动器。
+后再运行启动器。桌面版默认会在未显式指定端口时自动挑一个空闲端口，通常不需要手动处理。
 </details>
 
 <details>

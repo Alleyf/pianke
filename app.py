@@ -1469,6 +1469,13 @@ def _thumb_cache_key(rel: str, mtime: float, size: int, max_side: int) -> str:
 
 # ---------------- Flask ----------------
 
+TAURI_ALLOWED_ORIGINS = {
+    "tauri://localhost",
+    "https://tauri.localhost",
+    "http://localhost:1420",
+    "http://127.0.0.1:1420",
+}
+
 app = Flask(__name__, static_folder="static", static_url_path="/static")
 SESSION: Optional[SessionState] = None
 JOB: Optional[JobState] = None
@@ -1489,12 +1496,34 @@ _GROUPING: dict = {
 
 @app.after_request
 def _no_cache_static(resp):
-    """前端三件套不让浏览器缓存，避免 token bug 这种"304 拿旧版"的坑。"""
+    """前端三件套不让浏览器缓存，避免 token bug 这种"304 拿旧版"的坑。
+    同时为 Tauri 桌面版注入 CORS 头。"""
     if request.path == "/" or request.path.startswith("/static/"):
         resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
         resp.headers["Pragma"] = "no-cache"
         resp.headers["Expires"] = "0"
+    # Tauri 桌面版 CORS 支持
+    origin = request.headers.get("Origin", "")
+    if origin in TAURI_ALLOWED_ORIGINS:
+        resp.headers["Access-Control-Allow-Origin"] = origin
+        resp.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+        resp.headers["Access-Control-Allow-Headers"] = "Content-Type, X-Token"
     return resp
+
+
+@app.before_request
+def _tauri_cors_preflight():
+    """Tauri 桌面版 CORS 预检：对 OPTIONS 请求直接返回 204，附带 CORS 头。"""
+    if request.method != "OPTIONS":
+        return None
+    origin = request.headers.get("Origin", "")
+    if origin in TAURI_ALLOWED_ORIGINS:
+        resp = Response(status=204)
+        resp.headers["Access-Control-Allow-Origin"] = origin
+        resp.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+        resp.headers["Access-Control-Allow-Headers"] = "Content-Type, X-Token"
+        return resp
+    return None
 
 
 @app.before_request
@@ -1516,6 +1545,8 @@ def _security_check():
     if port:
         allowed_origins |= {f"http://127.0.0.1:{port}", f"http://localhost:{port}"}
     allowed_origins.add(f"http://{host}")
+    # Tauri 桌面版：WebView origin 在不同平台使用不同协议
+    allowed_origins |= TAURI_ALLOWED_ORIGINS
 
     origin = request.headers.get("Origin", "")
     referer = request.headers.get("Referer", "")
@@ -3727,20 +3758,48 @@ def api_watermark_open_out_dir():
 # ---------------- 入口 ----------------
 
 def main():
-    parser = argparse.ArgumentParser(description="本地照片擂台选片工具")
-    parser.add_argument("--port", type=int, default=5057)
-    parser.add_argument("--no-browser", action="store_true")
-    args = parser.parse_args()
+    args = build_arg_parser().parse_args()
+    browser_port = args.port or 5057
+    browser_open = not args.no_browser
 
     setup_logger(None)
-    url = f"http://localhost:{args.port}"
+    url = f"http://localhost:{args.port}" if args.port else "桌面内嵌服务（自动分配端口）"
     print(f"\n启动于 {url}")
     if SCRIPT_TOKEN:
         print(f"（脚本访问 token 已启用：X-Token: {SCRIPT_TOKEN[:8]}...）")
-    if not args.no_browser:
-        threading.Timer(0.8, lambda: webbrowser.open(url)).start()
-    app.run(host="127.0.0.1", port=args.port, debug=False)
+    if args.desktop:
+        try:
+            from pic_selecter.desktop import DesktopConfig, launch_desktop_app
+
+            return launch_desktop_app(
+                app,
+                DesktopConfig(
+                    port=args.port,
+                    title=args.window_title,
+                    width=args.window_width,
+                    height=args.window_height,
+                ),
+            )
+        except Exception as e:
+            print(f"桌面窗口启动失败：{e}", file=sys.stderr)
+            print("已自动回退到浏览器模式。", file=sys.stderr)
+            browser_open = True
+
+    if browser_open:
+        threading.Timer(0.8, lambda: webbrowser.open(f"http://localhost:{browser_port}")).start()
+    app.run(host="127.0.0.1", port=browser_port, debug=False)
+
+
+def build_arg_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="本地照片擂台选片工具")
+    parser.add_argument("--port", type=int, default=5057)
+    parser.add_argument("--no-browser", action="store_true")
+    parser.add_argument("--desktop", action="store_true", help="以原生桌面窗口运行")
+    parser.add_argument("--window-title", default="片刻", help="桌面窗口标题")
+    parser.add_argument("--window-width", type=int, default=1480, help="桌面窗口宽度")
+    parser.add_argument("--window-height", type=int, default=980, help="桌面窗口高度")
+    return parser
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main() or 0)

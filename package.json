@@ -1,0 +1,21 @@
+{
+  "name": "pianke-desktop",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "prepare:sidecar-stub": "python scripts/ensure_tauri_sidecar_stub.py",
+    "dev:ui": "npm run prepare:sidecar-stub && vite --config desktop/vite.config.mjs",
+    "build:ui": "npm run prepare:sidecar-stub && vite build --config desktop/vite.config.mjs",
+    "desktop:dev": "tauri dev",
+    "desktop:build": "tauri build",
+    "tauri": "tauri"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2",
+    "vite": "^7.0.0"
+  }
+}

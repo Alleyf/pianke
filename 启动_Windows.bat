@@ -1,7 +1,7 @@
 @echo off
 REM 片刻 · Windows 启动器
 REM
-REM 双击运行：自动装 Python + 依赖 + 检查更新 + 启动应用 + 自动开浏览器
+REM 双击运行：自动装 Python + 依赖 + 检查更新 + 启动桌面应用
 REM 没装过 Python 也没关系，会用 uv 自动下载一个独立的 Python。
 REM
 REM 第一次双击可能弹出「Windows 已保护你的电脑」蓝色窗口：

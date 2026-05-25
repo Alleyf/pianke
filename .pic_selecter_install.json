@@ -1,0 +1,7 @@
+{
+  "commit_sha": "f529c6e25c2f5adca610a97ba907e58465e0d4bc",
+  "modes": [
+    "fast"
+  ],
+  "packages_sig": "Pillow>=10.0|flask>=3.0|imagehash>=4.3|numpy>=1.26|opencv-contrib-python>=4.9|piexif>=1.1.3|pillow-heif>=0.16|pywebview>=5.1|rawpy>=0.18|scipy>=1.11"
+}

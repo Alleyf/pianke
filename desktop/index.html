@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>片刻</title>
+    <link rel="stylesheet" href="./style.css">
+  </head>
+  <body>
+    <main class="shell">
+      <section class="card">
+        <div class="mark" aria-hidden="true"></div>
+        <p class="eyebrow">Pianke Desktop</p>
+        <h1>正在唤起本地选片引擎</h1>
+        <p id="status" class="status">准备启动桌面后端…</p>
+        <div class="progress">
+          <span class="progress-bar"></span>
+        </div>
+        <p id="detail" class="detail">首次打开如果需要装模型或解压依赖，时间会稍长一点。</p>
+        <button id="retry" class="retry hidden" type="button">重试启动</button>
+      </section>
+    </main>
+    <script type="module" src="./main.js"></script>
+  </body>
+</html>

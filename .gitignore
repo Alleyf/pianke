@@ -1,3 +1,7 @@
+.codegraph
+.omc
+.spec-workflow
+
 # ===== Python =====
 __pycache__/
 *.py[cod]
@@ -61,3 +65,11 @@ job-*.log
 
 # 内部审计 / 设计文档，不入库
 docs/
+
+# ===== Tauri / Node 桌面构建 =====
+node_modules/
+desktop-dist/
+src-tauri/target/
+src-tauri/binaries/.build/
+src-tauri/binaries/pianke-backend-*
+.tauri-sidecar-build/

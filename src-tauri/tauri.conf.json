@@ -1,0 +1,47 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "片刻",
+  "version": "0.1.0",
+  "identifier": "com.pianke.desktop",
+  "build": {
+    "beforeDevCommand": "npm run dev:ui",
+    "devUrl": "http://127.0.0.1:1420",
+    "beforeBuildCommand": "npm run build:ui",
+    "frontendDist": "../desktop-dist",
+    "beforeBundleCommand": "python scripts/build_tauri_sidecar.py"
+  },
+  "app": {
+    "withGlobalTauri": false,
+    "windows": [
+      {
+        "label": "main",
+        "title": "片刻",
+        "width": 1480,
+        "height": 980,
+        "minWidth": 1200,
+        "minHeight": 760,
+        "resizable": true
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "category": "Photography",
+    "shortDescription": "本地照片擂台式选片桌面应用",
+    "longDescription": "片刻是面向摄影师的本地照片初筛与擂台选片工具，支持 JPG、HEIC 与 RAW 工作流。",
+    "externalBin": [
+      "binaries/pianke-backend"
+    ],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ]
+  }
+}
