@@ -31,8 +31,13 @@
     "active": true,
     "targets": "all",
     "category": "Photography",
+    "publisher": "zhaoyue4810",
+    "homepage": "https://github.com/zhaoyue4810/pianke",
+    "copyright": "Copyright (c) 2026 zhaoyue4810",
+    "license": "MIT",
+    "licenseFile": "installer-assets/license.rtf",
     "shortDescription": "本地照片擂台式选片桌面应用",
-    "longDescription": "片刻是面向摄影师的本地照片初筛与擂台选片工具，支持 JPG、HEIC 与 RAW 工作流。",
+    "longDescription": "片刻是面向摄影师与摄影爱好者的本地照片擂台式选片工具。它通过 AI 完成失败片初筛与相似照片分组，再把最终审美决定权留给你。",
     "externalBin": [
       "binaries/pianke-backend"
     ],
@@ -42,11 +47,19 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
-,
+    ],
     "windows": {
       "wix": {
-        "language": "zh-CN"
+        "language": "zh-CN",
+        "bannerPath": "installer-assets/wix-banner.bmp",
+        "dialogImagePath": "installer-assets/wix-dialog.bmp"
+      },
+      "nsis": {
+        "installerIcon": "icons/icon.ico",
+        "uninstallerIcon": "icons/icon.ico",
+        "headerImage": "installer-assets/nsis-header.bmp",
+        "sidebarImage": "installer-assets/nsis-sidebar.bmp",
+        "uninstallerHeaderImage": "installer-assets/nsis-header.bmp"
       }
     }
   }

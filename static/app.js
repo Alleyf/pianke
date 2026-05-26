@@ -144,13 +144,29 @@ function dateLabel(dtStr) {
 // Toast
 // =================================================================
 let toastTimer = null;
+function lockScroll() { document.body.classList.add("no-scroll"); }
+function unlockScroll() { document.body.classList.remove("no-scroll"); }
 function toast(msg, ms = 2400) {
   const el = $("toast");
   el.textContent = msg;
-  el.classList.remove("hidden");
+  el.className = "toast";
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => el.classList.add("hidden"), ms);
 }
+toast.error = (msg, ms = 3200) => {
+  const el = $("toast");
+  el.textContent = msg;
+  el.className = "toast toast-error";
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { el.className = "toast hidden"; }, ms);
+};
+toast.success = (msg, ms = 2800) => {
+  const el = $("toast");
+  el.textContent = msg;
+  el.className = "toast toast-success";
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { el.className = "toast hidden"; }, ms);
+};
 
 // =================================================================
 // 确认对话框（基于 Promise）
@@ -160,8 +176,10 @@ function confirmDialog(title, body) {
     $("confirm-title").textContent = title;
     $("confirm-body").textContent = body;
     $("confirm").classList.remove("hidden");
+    lockScroll();
     const cleanup = (ans) => {
       $("confirm").classList.add("hidden");
+      unlockScroll();
       $("confirm-ok").removeEventListener("click", ok);
       $("confirm-cancel").removeEventListener("click", cancel);
       resolve(ans);
@@ -342,7 +360,7 @@ async function saveArkKey() {
   const saveBtn = $("tycoon-key-save");
   const key = (input?.value || "").trim();
   if (!key) {
-    setStatus("请粘贴 API Key", "error");
+    toast.error("请粘贴 API Key");
     input?.focus();
     return;
   }
@@ -363,21 +381,23 @@ async function saveArkKey() {
     llmModelsLoaded = false;
     await refreshArkKeyStatus();
     setStatus(`✓ Key 已保存（${data.model_count} 个模型可用）`, "idle");
+    toast.success(`Key 已保存，${data.model_count} 个模型可用`);
   } catch (e) {
-    setStatus(`× ${e.message}`, "error");
+    toast.error(e.message);
   } finally {
     if (saveBtn) { saveBtn.disabled = false; saveBtn.textContent = "验证并保存"; }
   }
 }
 
 async function clearArkKey() {
-  if (!confirm("清除 API Key？\n\n本地存储的 key 会被删掉，需要重新输入才能用土豪模式。")) return;
+  const ok = await confirmDialog("清除 API Key？", "本地存储的 key 会被删掉，需要重新输入才能用土豪模式。");
+  if (!ok) return;
   try {
     await fetch("/api/ark_key", { method: "DELETE" });
     llmModelsLoaded = false;
     await refreshArkKeyStatus();
   } catch (e) {
-    setStatus(`清除失败：${e.message}`, "error");
+    toast.error("清除失败：" + e.message);
   }
 }
 
@@ -1629,12 +1649,14 @@ async function enterArena() {
   showView("arena");
   if (!localStorage.getItem(TUTORIAL_KEY)) {
     $("tutorial").classList.remove("hidden");
+    lockScroll();
   }
   await loadCurrent();
 }
 
 $("btn-tut-close").addEventListener("click", () => {
   $("tutorial").classList.add("hidden");
+  unlockScroll();
   localStorage.setItem(TUTORIAL_KEY, "1");
 });
 
@@ -2506,10 +2528,12 @@ function openLightbox(item) {
   $("lb-img").src = imgUrl(item.path);
   $("lb-caption").textContent = item.name || basename(item.path);
   $("lightbox").classList.remove("hidden");
+  lockScroll();
 }
 function closeLightbox() {
   $("lightbox").classList.add("hidden");
   $("lb-img").removeAttribute("src");
+  unlockScroll();
 }
 $("lb-close").addEventListener("click", closeLightbox);
 $("lightbox").addEventListener("click", (e) => {
@@ -2744,6 +2768,7 @@ function wmRefreshDebounced(delay = 300) {
 
 async function wmOpen() {
   $("wm-modal").classList.remove("hidden");
+  lockScroll();
   WM.previewIdx = 0;
   WM.isExporting = false;
   $("wm-progress").classList.add("hidden");
@@ -2761,11 +2786,13 @@ async function wmOpen() {
   wmRefreshPreview();
 }
 
-function wmClose() {
+async function wmClose() {
   if (WM.isExporting) {
-    if (!confirm("水印导出正在进行中，确定关闭吗？后台仍会继续。")) return;
+    const ok = await confirmDialog("关闭水印导出？", "导出正在进行中，确定关闭吗？后台仍会继续。");
+    if (!ok) return;
   }
   $("wm-modal").classList.add("hidden");
+  unlockScroll();
   clearTimeout(WM.debounceHandle);
   if (WM.pollHandle) { clearTimeout(WM.pollHandle); WM.pollHandle = null; }
 }
@@ -2834,7 +2861,8 @@ async function wmPoll() {
 }
 
 async function wmStop() {
-  if (!confirm("中止水印导出？已完成的照片会保留。")) return;
+  const ok = await confirmDialog("中止水印导出？", "已完成的照片会保留。");
+  if (!ok) return;
   try {
     await fetchJSON("/api/watermark/cancel", { method: "POST", body: JSON.stringify({}) });
   } catch (e) { toast("中止失败：" + e.message); }
