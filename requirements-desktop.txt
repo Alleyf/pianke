@@ -1,0 +1,29 @@
+# 桌面端打包依赖（支持三种模式：极速 / 专家 / 土豪）
+
+# 基础依赖
+Pillow>=10.0
+imagehash>=4.3
+flask>=3.0
+pillow-heif>=0.16
+numpy>=1.26
+scipy>=1.11
+piexif>=1.1.3
+rawpy>=0.18
+
+# 极速模式：ORB 匹配 + FFT saliency
+opencv-contrib-python>=4.9
+
+# 专家模式：DINOv2 / NIMA / MUSIQ / InsightFace
+torch>=2.2
+torchvision>=0.17
+transformers>=4.40
+insightface>=0.7
+onnxruntime>=1.16
+pyiqa>=0.1.10
+timm>=0.9
+
+# 土豪模式：LLM 初筛
+openai>=1.40
+
+# 打包工具
+pyinstaller>=6.0

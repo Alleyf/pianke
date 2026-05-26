@@ -102,6 +102,37 @@ def build_sidecar() -> Path:
         "pillow_heif",
         "--hidden-import",
         "piexif",
+        "--hidden-import",
+        "imagehash",
+        "--hidden-import",
+        "scipy",
+        "--collect-submodules",
+        "flask",
+        "--collect-submodules",
+        "pillow_heif",
+        "--collect-submodules",
+        "piexif",
+        "--hidden-import",
+        "cv2",
+        "--collect-data",
+        "cv2",
+        # 专家/土豪模式依赖
+        "--collect-submodules",
+        "torch",
+        "--collect-submodules",
+        "torchvision",
+        "--collect-submodules",
+        "transformers",
+        "--collect-submodules",
+        "insightface",
+        "--collect-submodules",
+        "onnxruntime",
+        "--collect-submodules",
+        "pyiqa",
+        "--collect-submodules",
+        "timm",
+        "--collect-submodules",
+        "openai",
     ]
     if is_win:
         cmd.append("--noconsole")
@@ -115,8 +146,30 @@ def build_sidecar() -> Path:
     if not built.exists():
         raise RuntimeError(f"未找到打包产物：{built}")
 
+    # Tauri externalBin 会自动在 binaries/pianke-backend 后追加 target 后缀。
+    # 因此这里必须产出 binaries/pianke-backend-<target>.exe，plain 名称不会被打包器识别。
     final_path = BIN_DIR / out_name
-    shutil.copy2(built, final_path)
+    # Windows 上旧 exe 可能被占用，先尝试删除再用重试机制复制
+    if final_path.exists():
+        try:
+            final_path.unlink()
+        except PermissionError:
+            pass  # 被占用，下面 copy2 会重试
+    for attempt in range(5):
+        try:
+            shutil.copy2(built, final_path)
+            break
+        except PermissionError:
+            if attempt < 4:
+                import time
+                print(f"文件被占用，等待重试... ({attempt + 1}/5)")
+                time.sleep(3)
+            else:
+                raise RuntimeError(
+                    f"无法复制 sidecar 到 {final_path}，文件可能被其他进程占用。"
+                    f"请关闭可能使用该文件的程序后重试。"
+                )
+
     print(f"Sidecar ready: {final_path}")
     return final_path
 

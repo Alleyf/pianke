@@ -8,7 +8,7 @@
     "devUrl": "http://127.0.0.1:1420",
     "beforeBuildCommand": "npm run build:ui",
     "frontendDist": "../desktop-dist",
-    "beforeBundleCommand": "python scripts/build_tauri_sidecar.py"
+    "beforeBundleCommand": "node scripts/run_python.mjs scripts/build_tauri_sidecar.py"
   },
   "app": {
     "withGlobalTauri": false,
@@ -43,5 +43,11 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ]
+,
+    "windows": {
+      "wix": {
+        "language": "zh-CN"
+      }
+    }
   }
 }

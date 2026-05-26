@@ -4,12 +4,12 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "prepare:sidecar-stub": "python scripts/ensure_tauri_sidecar_stub.py",
+    "prepare:sidecar-stub": "node scripts/run_python.mjs scripts/ensure_tauri_sidecar_stub.py",
     "dev:ui": "npm run prepare:sidecar-stub && vite --config desktop/vite.config.mjs",
     "build:ui": "npm run prepare:sidecar-stub && vite build --config desktop/vite.config.mjs",
-    "desktop:dev": "tauri dev",
-    "desktop:build": "tauri build",
-    "tauri": "tauri"
+    "desktop:dev": "node scripts/tauri_cli_wrapper.mjs dev",
+    "desktop:build": "node scripts/tauri_cli_wrapper.mjs build",
+    "tauri": "node scripts/tauri_cli_wrapper.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2"

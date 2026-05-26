@@ -6,6 +6,17 @@ from pathlib import Path
 
 def import_app_module():
     sys.modules.setdefault("imagehash", types.SimpleNamespace(phash=lambda *args, **kwargs: "0" * 16))
+    if "PIL" not in sys.modules:
+        fake_image = types.SimpleNamespace(
+            open=lambda *args, **kwargs: types.SimpleNamespace(
+                verify=lambda: None,
+                load=lambda: None,
+                convert=lambda *_a, **_k: None,
+                info={},
+            )
+        )
+        fake_image_ops = types.SimpleNamespace(exif_transpose=lambda img: img)
+        sys.modules["PIL"] = types.SimpleNamespace(Image=fake_image, ImageOps=fake_image_ops)
     if "flask" not in sys.modules:
         class FakeFlask:
             def __init__(self, *args, **kwargs):
@@ -204,3 +215,34 @@ def test_confirm_prescreen_groups_only_passed_and_restored_photos(tmp_path):
     assert bad_restore.path in tournament_images
     assert bad_drop.path not in tournament_images
     assert app.SESSION.prescreen_reviewed is True
+def test_state_persistence_uses_utf8_for_non_ascii_content(tmp_path, monkeypatch):
+    app = import_app_module()
+    reason = "¿严重模糊"
+    bad_path = str(tmp_path / "bad.jpg")
+    group = app.GroupState(
+        images=[bad_path],
+        losers=[bad_path],
+        auto_rejected=[bad_path],
+        auto_reject_reasons={bad_path: reason},
+        finished=True,
+    )
+    sess = app.SessionState(folder=str(tmp_path), dry_run=True, groups=[group], companions={})
+    original_write_text = Path.write_text
+    original_read_text = Path.read_text
+
+    def checked_write_text(self, data, encoding=None, errors=None, newline=None):
+        assert encoding == "utf-8"
+        return original_write_text(self, data, encoding=encoding, errors=errors, newline=newline)
+
+    def checked_read_text(self, encoding=None, errors=None):
+        assert encoding == "utf-8"
+        return original_read_text(self, encoding=encoding, errors=errors)
+
+    monkeypatch.setattr(Path, "write_text", checked_write_text)
+    monkeypatch.setattr(Path, "read_text", checked_read_text)
+
+    app.save_state(sess)
+    loaded = app.load_state(str(tmp_path))
+
+    assert loaded is not None
+    assert loaded.groups[0].auto_reject_reasons[bad_path] == reason

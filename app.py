@@ -443,7 +443,7 @@ def save_state(state: SessionState) -> None:
     }
     p = state_path(state.folder)
     tmp = p.with_suffix(p.suffix + ".tmp")
-    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2))
+    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
     tmp.replace(p)
 
 
@@ -485,7 +485,7 @@ def load_state(folder: str) -> Optional[SessionState]:
     if not p.exists():
         return None
     try:
-        data = json.loads(p.read_text())
+        data = json.loads(p.read_text(encoding="utf-8"))
         data = _migrate_state(data)
         groups = [_group_from_dict(g) for g in data["groups"]]
         sess = SessionState(
@@ -1471,6 +1471,7 @@ def _thumb_cache_key(rel: str, mtime: float, size: int, max_side: int) -> str:
 
 TAURI_ALLOWED_ORIGINS = {
     "tauri://localhost",
+    "http://tauri.localhost",
     "https://tauri.localhost",
     "http://localhost:1420",
     "http://127.0.0.1:1420",
@@ -1878,7 +1879,7 @@ def _wipe_caches(folder: str) -> None:
     sp = state_path(folder)
     if sp.exists():
         try:
-            data = json.loads(sp.read_text())
+            data = json.loads(sp.read_text(encoding="utf-8"))
             if data.get("mode") in ("copy", "move"):
                 prev_mode = data["mode"]
         except Exception as e:

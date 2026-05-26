@@ -138,7 +138,7 @@ fn spawn_sidecar_backend(app: &AppHandle, port: u16) -> Result<CommandChild, Str
     let args = vec!["--port".to_string(), port.to_string(), "--no-browser".to_string()];
     let command = app
         .shell()
-        .sidecar("binaries/pianke-backend")
+        .sidecar("pianke-backend")
         .map_err(|e| format!("准备 sidecar 失败：{e}"))?;
     let (mut rx, child) = command
         .args(args)

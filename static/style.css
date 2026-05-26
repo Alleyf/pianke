@@ -61,7 +61,12 @@ html, body {
   -moz-osx-font-smoothing: grayscale;
   font-feature-settings: "kern", "liga", "calt";
 }
-body { display: flex; flex-direction: column; min-height: 100vh; }
+body {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
+body.no-scroll { overflow: hidden; }
 
 /* 颗粒纹理（极淡），叠在背景上让米色不显平 */
 .grain {
@@ -1915,6 +1920,14 @@ span.sc-item { color: var(--ink-faint); }
   text-align: center;
 }
 .toast.hidden { display: none; }
+.toast-error {
+  background: #b25c41;
+  color: #faf7ef;
+}
+.toast-success {
+  background: var(--good);
+  color: #faf7ef;
+}
 @keyframes toastIn {
   from { opacity: 0; transform: translateX(-50%) translateY(10px); }
   to { opacity: 1; transform: translateX(-50%) translateY(0); }
