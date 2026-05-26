@@ -30,7 +30,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-GITHUB_OWNER = "zhaoyue4810"
+GITHUB_OWNER = "Alleyf"
 GITHUB_REPO = "pianke"
 GITHUB_BRANCH = "main"
 

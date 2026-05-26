@@ -33,7 +33,7 @@ transformers>=4.40
 
 # 人脸检测 + ArcFace 512 维嵌入（RetinaFace + ArcFace via InsightFace）
 insightface>=0.7
-onnxruntime>=1.16
+onnxruntime>=1.16,<1.22
 
 # 互补美学/质量评分（pyiqa: MUSIQ 技术质量 + CLIP-IQA+ LAION 美学）
 pyiqa>=0.1.10

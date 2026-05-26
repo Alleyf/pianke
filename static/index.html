@@ -166,8 +166,24 @@
               </label>
             </div>
 
-            <details class="adv-deep">
-              <summary>分组阈值（默认通常足够好）</summary>
+            <div class="opt-section">
+              <div class="opt-label">分组策略（推荐"适中"）</div>
+              <label class="radio">
+                <input type="radio" name="threshold-preset" value="lenient">
+                <span><strong>宽松</strong> · 同一场景的细微变化也会合并，组更大更少</span>
+              </label>
+              <label class="radio">
+                <input type="radio" name="threshold-preset" value="moderate" checked>
+                <span><strong>适中</strong> · 推荐档位，同一场景连拍合并，换场景自动拆开</span>
+              </label>
+              <label class="radio">
+                <input type="radio" name="threshold-preset" value="strict">
+                <span><strong>严格</strong> · 只有几乎一样的照片才合并，组更小更多</span>
+              </label>
+            </div>
+
+            <details class="adv-deep threshold-fine-tune">
+              <summary>微调参数</summary>
               <div class="slider-row">
                 <label for="thr-near">同场景宽容度</label>
                 <input type="range" id="thr-near" min="4" max="16" step="1" value="10">
@@ -212,8 +228,8 @@
         <span>JPG · PNG · HEIC · WEBP · TIFF · RAW</span>
       </div>
       <div class="landing-foot-row landing-foot-github">
-        <a href="https://github.com/zhaoyue4810/pianke.git" target="_blank" rel="noopener noreferrer">
-          github.com/zhaoyue4810/pianke
+        <a href="https://github.com/Alleyf/pianke" target="_blank" rel="noopener noreferrer">
+          github.com/Alleyf/pianke
         </a>
       </div>
     </footer>
@@ -252,8 +268,9 @@
     <div class="first-run-hint hidden" id="first-run-hint" role="status">
       <span class="first-run-hint-icon" aria-hidden="true">⏳</span>
       <div class="first-run-hint-text">
-        <strong>首次运行专家模式</strong>
-        正在终端后台安装本地模型依赖（数百 MB，约 1–5 分钟）。这段时间进度条停在 0% 是正常的，请保留启动该程序的终端窗口，依赖装好后会自动开始分析。
+        <strong id="model-progress-title">首次运行专家模式</strong>
+        <span id="model-progress-subtitle">正在加载本地模型依赖…</span>
+        <div id="model-steps" class="model-steps"></div>
       </div>
     </div>
 
@@ -326,7 +343,7 @@
   <main class="preview-shell prescreen-shell">
     <p class="eyebrow center">AI 建议放手的照片</p>
     <h2 class="preview-title" id="prescreen-title">看起来可以放手的照片</h2>
-    <p class="preview-sub" id="prescreen-sub">如有想留下的，点一下即可保留。其余将归入 losers/。</p>
+    <p class="preview-sub" id="prescreen-sub">点击可放大查看，确认后点击「保留这张」留下。其余将归入 losers/。</p>
 
     <div class="done-stats prescreen-stats">
       <div class="stat"><div class="stat-num" id="ps-total">0</div><div class="stat-cap">本次共扫描</div></div>
@@ -350,7 +367,7 @@
       <button id="btn-prescreen-continue" class="btn btn-primary">确认全部放手，进入选片</button>
       <button id="btn-prescreen-all" class="btn-ghost">全部保留 · 我自己看</button>
     </div>
-    <p class="prescreen-hint">如属创作意图，可逐张点开保留。建议放手的照片在完成页仍可召回。</p>
+    <p class="prescreen-hint">点击照片可放大查看，确认后再决定是否保留。建议放手的照片在完成页仍可召回。</p>
   </main>
 </section>
 
@@ -390,8 +407,24 @@
     <h2 class="preview-title" id="preview-title">分组就绪</h2>
     <p class="preview-sub" id="preview-sub">每组的金边那张是 AI 候选——不强制，你可以推翻。</p>
 
-    <details class="preview-controls-fold">
-      <summary>分组不理想？调一下阈值</summary>
+    <div class="opt-section">
+      <div class="opt-label">分组策略</div>
+      <label class="radio">
+        <input type="radio" name="prv-threshold-preset" value="lenient">
+        <span><strong>宽松</strong> · 同一场景的细微变化也会合并，组更大更少</span>
+      </label>
+      <label class="radio">
+        <input type="radio" name="prv-threshold-preset" value="moderate" checked>
+        <span><strong>适中</strong> · 推荐档位，同一场景连拍合并，换场景自动拆开</span>
+      </label>
+      <label class="radio">
+        <input type="radio" name="prv-threshold-preset" value="strict">
+        <span><strong>严格</strong> · 只有几乎一样的照片才合并，组更小更多</span>
+      </label>
+    </div>
+
+    <details class="preview-controls-fold threshold-fine-tune">
+      <summary>微调参数</summary>
       <div class="preview-controls">
         <div class="slider-row">
           <label for="prv-near">同场景宽容度</label>
@@ -722,21 +755,15 @@
         <div class="wm-foot-actions">
           <button id="wm-cancel" class="btn-ghost">关闭</button>
           <button id="wm-stop" class="btn-ghost hidden">中止</button>
-          <button id="wm-start" class="btn btn-primary">开始导出</button>
+          <button id="wm-export-one" class="btn-ghost">导出这张</button>
+          <button id="wm-start" class="btn btn-primary">开始导出全部</button>
           <button id="wm-open-out" class="btn btn-primary hidden">打开导出文件夹</button>
         </div>
       </footer>
     </div>
   </div>
 
-  <!-- 大图查看 -->
-  <div id="lightbox" class="lightbox hidden">
-    <button class="lb-close" id="lb-close" aria-label="关闭">×</button>
-    <button class="lb-original" id="lb-original" title="查看原图">原图</button>
-    <img id="lb-img" alt="">
-    <div class="lb-caption" id="lb-caption"></div>
-  </div>
-</section>
+  </section>
 
 <!-- 全局 toast -->
 <div id="toast" class="toast hidden"></div>
@@ -751,6 +778,16 @@
       <button id="confirm-ok" class="btn btn-primary small">确定</button>
     </div>
   </div>
+</div>
+
+<!-- 大图查看 -->
+<div id="lightbox" class="lightbox hidden">
+  <button class="lb-close" id="lb-close" aria-label="关闭">×</button>
+  <button class="lb-original" id="lb-original" title="查看原图">原图</button>
+  <button class="lb-action hidden" id="lb-action"></button>
+  <img id="lb-img" alt="">
+  <div class="lb-exif hidden" id="lb-exif"></div>
+  <div class="lb-caption" id="lb-caption"></div>
 </div>
 
 <script src="/static/app.js?v=20260526a"></script>

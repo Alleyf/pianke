@@ -133,7 +133,7 @@ class JobState:
     dry_run: bool
     mode: str = "copy"
     engine: str = "fast"
-    status: str = "pending"  # pending | scanning | hashing | grouping | done | error | cancelled
+    status: str = "pending"  # pending | warming | scanning | hashing | grouping | done | error | cancelled
     done: int = 0
     total: int = 0
     label: str = ""
@@ -1951,14 +1951,52 @@ def _require_engine(engine: str) -> None:
             raise RuntimeError(f"[expert] 缺少 cv2：{e}") from e
         from pic_selecter import vision
         vision.require_expert_capabilities()  # imports 检查
-        vision.prewarm_all()                  # 真正加载模型权重；失败 raise
+
+        def _expert_progress(step: str, done: int, total: int):
+            if JOB is None:
+                return
+            JOB.status = "warming"
+            JOB.label = step
+            JOB.done = done
+            JOB.total = total
+            JOB.event_seq += 1
+            JOB.recent_events.append({
+                "seq": JOB.event_seq,
+                "warming": True,
+                "step": step,
+                "done": done,
+                "total": total,
+            })
+            if len(JOB.recent_events) > 60:
+                JOB.recent_events = JOB.recent_events[-60:]
+
+        vision.prewarm_all(_expert_progress)  # 真正加载模型权重；失败 raise
         logger.info("[expert] 依赖校验通过：DINOv2 / NIMA / MUSIQ / CLIP-IQA+ / InsightFace 全部就绪")
     elif engine == "tycoon":
         # 土豪模式：分组依赖 DINOv2 + InsightFace；初筛靠 LLM
         from pic_selecter import vision
         from pic_selecter import llm_judge
         vision.require_tycoon_capabilities()
-        vision.prewarm_tycoon()
+
+        def _tycoon_progress(step: str, done: int, total: int):
+            if JOB is None:
+                return
+            JOB.status = "warming"
+            JOB.label = step
+            JOB.done = done
+            JOB.total = total
+            JOB.event_seq += 1
+            JOB.recent_events.append({
+                "seq": JOB.event_seq,
+                "warming": True,
+                "step": step,
+                "done": done,
+                "total": total,
+            })
+            if len(JOB.recent_events) > 60:
+                JOB.recent_events = JOB.recent_events[-60:]
+
+        vision.prewarm_tycoon(_tycoon_progress)
         llm_judge.require_llm_capabilities()  # ARK_API_KEY + list_models() 联通
         logger.info("[tycoon] 依赖校验通过：DINOv2 / InsightFace + Ark 视觉 LLM 就绪")
     else:
@@ -3089,6 +3127,115 @@ def api_restore_rejected():
     return jsonify({"ok": True, "restored": True})
 
 
+@app.route("/api/unrestore_rejected", methods=["POST"])
+def api_unrestore_rejected():
+    """取消保留：把已 restore 的照片重新归入放手列表。"""
+    if SESSION is None:
+        return jsonify({"error": "no session"}), 400
+    data = request.get_json(force=True) or {}
+    gid = data.get("group_id") or ""
+    raw_path = data.get("path") or data.get("original_path") or ""
+    if not gid or not raw_path:
+        return jsonify({"error": "缺少 group_id 或 path"}), 400
+
+    with LOCK:
+        # ---- prescreen 路径 ----
+        original_pre = _find_prescreen_rejected(raw_path)
+        if gid == "__prescreen__" and original_pre:
+            if original_pre in SESSION.prescreen_restored:
+                SESSION.prescreen_restored.remove(original_pre)
+                save_state(SESSION)
+            return jsonify({"ok": True, "unrestored": True})
+
+        # ---- group 路径 ----
+        _, group, original = _find_auto_rejected(gid, raw_path)
+        if group is None or original is None:
+            return jsonify({"error": "找不到这张照片"}), 404
+
+        if original not in group.manual_restored:
+            return jsonify({"ok": True, "unrestored": True})
+
+        failed: Optional[str] = None
+        if not SESSION.dry_run:
+            # 找到 restored 后 winners/ 里的实际文件
+            restored_dst = None
+            for entry in group.move_log:
+                if (entry.get("src") == original
+                        and entry.get("kind") in ("restored", "restored_companion")):
+                    dst = entry.get("dst", "")
+                    if Path(dst).exists():
+                        restored_dst = dst
+                        break
+            # 如果 winners/ 里没找到，可能是原位没动过（copy 模式）
+            win_d = winners_dir(SESSION.folder)
+            if restored_dst is None:
+                candidate = win_d / Path(original).name
+                if candidate.exists():
+                    restored_dst = str(candidate)
+
+            if restored_dst:
+                lose_d = losers_dir(SESSION.folder)
+                lose_d.mkdir(exist_ok=True)
+                target = _unique_target(lose_d, Path(original).name)
+                try:
+                    if SESSION.mode == "move":
+                        shutil.move(restored_dst, str(target))
+                    else:
+                        shutil.copy2(restored_dst, str(target))
+                        Path(restored_dst).unlink()
+                    group.move_log.append({"src": original, "dst": str(target), "kind": "loser"})
+                except OSError as e:
+                    failed = str(e)
+
+        if failed:
+            return jsonify({"error": failed}), 500
+
+        group.manual_restored.remove(original)
+        # 也从 extra_winners 移除
+        actual_path = _actual_auto_rejected_path(group, original, SESSION.folder)
+        for ep in [original, actual_path]:
+            if ep in group.extra_winners:
+                group.extra_winners.remove(ep)
+        save_state(SESSION)
+    return jsonify({"ok": True, "unrestored": True})
+
+
+@app.route("/api/image_exif")
+def api_image_exif():
+    """返回单张照片的 EXIF 参数信息。"""
+    if SESSION is None:
+        return jsonify({"error": "no session"}), 400
+    raw_path = request.args.get("path", "")
+    if not raw_path:
+        return jsonify({"error": "missing path"}), 400
+
+    # 解析实际文件路径
+    actual = _resolve_actual_path(raw_path, SESSION.folder)
+    if not actual or not Path(actual).exists():
+        return jsonify({"error": "file not found"}), 404
+
+    try:
+        info = parse_exif(str(actual))
+    except Exception:
+        info = {}
+    return jsonify(info)
+
+
+def _resolve_actual_path(raw_path: str, folder: str) -> Optional[str]:
+    """尝试在多种目录下定位文件的实际路径。"""
+    from pathlib import Path
+    candidates = [
+        raw_path,
+        str(Path(folder) / raw_path),
+        str(winners_dir(folder) / Path(raw_path).name),
+        str(losers_dir(folder) / Path(raw_path).name),
+    ]
+    for c in candidates:
+        if Path(c).exists():
+            return c
+    return None
+
+
 def _run_grouping_async(accepted_infos, old_session_snapshot):
     """后台线程：运行分组 → 逐个推送到 _GROUPING → 构建 session。
 
@@ -3634,6 +3781,41 @@ def api_watermark_preview():
             "datetime": exif.datetime_str,
         },
     })
+
+
+@app.route("/api/watermark/export_one", methods=["POST"])
+def api_watermark_export_one():
+    """导出单张水印照片，直接返回 JPEG 文件供浏览器下载。"""
+    if SESSION is None:
+        return jsonify({"error": "no session"}), 400
+    winners = _winner_paths()
+    if not winners:
+        return jsonify({"error": "没有 winner 照片可导出"}), 400
+
+    from pic_selecter.watermark import WatermarkConfig, render
+    cfg_dict = request.get_json(silent=True) or {}
+    cfg = WatermarkConfig.from_dict(cfg_dict)
+
+    try:
+        idx = int(cfg_dict.get("preview_index", 0))
+    except (ValueError, TypeError):
+        idx = 0
+    idx = max(0, min(idx, len(winners) - 1))
+    src = winners[idx]
+
+    try:
+        data = render(src, cfg)
+    except Exception as e:
+        logger.exception("watermark single export failed")
+        return jsonify({"error": f"{type(e).__name__}: {e}"}), 500
+
+    from flask import Response
+    filename = Path(src).stem + "_wm.jpg"
+    return Response(
+        data,
+        mimetype="image/jpeg",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 def _run_watermark_job(src_paths: list[str], dst: Path, cfg) -> None:

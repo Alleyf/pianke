@@ -23,7 +23,7 @@ from __future__ import annotations
 import logging
 import threading
 from pathlib import Path
-from typing import List, Tuple
+from typing import Callable, List, Tuple
 
 import numpy as np
 from PIL import Image
@@ -419,16 +419,58 @@ def require_tycoon_capabilities() -> None:
         )
 
 
-def prewarm_all() -> None:
-    """专家模式预热全部模型；任一失败抛出。"""
-    _ensure_dinov2()
-    _ensure_nima()
-    _ensure_musiq()
-    _ensure_clipiqa()
-    _ensure_insightface()
+# =============================================================
+# 模型预热步骤定义（供 progress_cb 回调用）
+# =============================================================
+
+EXPERT_STEPS = [
+    ("dinov2", "DINOv2 语义特征", "加载 DINOv2 语义模型…"),
+    ("nima", "NIMA 美学评分", "加载 NIMA 美学评分模型…"),
+    ("musiq", "MUSIQ 技术质量", "加载 MUSIQ 技术质量模型…"),
+    ("clipiqa", "CLIP-IQA+ 美学", "加载 CLIP-IQA+ 美学模型…"),
+    ("insightface", "InsightFace 人脸", "加载 InsightFace 人脸模型…"),
+]
+
+TYCOON_STEPS = [
+    ("dinov2", "DINOv2 语义特征", "加载 DINOv2 语义模型…"),
+    ("insightface", "InsightFace 人脸", "加载 InsightFace 人脸模型…"),
+]
 
 
-def prewarm_tycoon() -> None:
-    """土豪模式预热：仅 DINOv2 + InsightFace（分组依赖）。"""
-    _ensure_dinov2()
-    _ensure_insightface()
+def prewarm_all(progress_cb: Callable[[str, int, int], None] | None = None) -> None:
+    """专家模式预热全部模型；任一失败抛出。
+
+    progress_cb(step, done, total): 每个模型开始加载前回调一次，done 表示已完成的模型数。
+    """
+    _ensure_map = {
+        "dinov2": _ensure_dinov2,
+        "nima": _ensure_nima,
+        "musiq": _ensure_musiq,
+        "clipiqa": _ensure_clipiqa,
+        "insightface": _ensure_insightface,
+    }
+    total = len(EXPERT_STEPS)
+    for i, (key, _label, step_msg) in enumerate(EXPERT_STEPS):
+        if progress_cb:
+            progress_cb(step_msg, i, total)   # i 个已完成，第 i 个开始加载
+        _ensure_map[key]()
+    if progress_cb:
+        progress_cb("模型加载完成", total, total)  # 全部完成
+
+
+def prewarm_tycoon(progress_cb: Callable[[str, int, int], None] | None = None) -> None:
+    """土豪模式预热：仅 DINOv2 + InsightFace（分组依赖）。
+
+    progress_cb(step, done, total): 每个模型开始加载前回调一次，done 表示已完成的模型数。
+    """
+    _ensure_map = {
+        "dinov2": _ensure_dinov2,
+        "insightface": _ensure_insightface,
+    }
+    total = len(TYCOON_STEPS)
+    for i, (key, _label, step_msg) in enumerate(TYCOON_STEPS):
+        if progress_cb:
+            progress_cb(step_msg, i, total)   # i 个已完成，第 i 个开始加载
+        _ensure_map[key]()
+    if progress_cb:
+        progress_cb("模型加载完成", total, total)  # 全部完成

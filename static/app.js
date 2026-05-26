@@ -267,9 +267,53 @@ function bindSlider(input, label) {
   input.addEventListener("input", sync);
   sync();
 }
+
+const THRESHOLD_PRESETS = {
+  lenient:  { near: 14, far: 9, secs: 10 },
+  moderate: { near: 10, far: 6, secs: 5 },
+  strict:   { near: 6,  far: 4, secs: 3 },
+};
+
+function setupThresholdPresets(presetName, sliderNearId, sliderFarId, sliderSecsId) {
+  const radios = document.querySelectorAll(`input[name="${presetName}"]`);
+  const near = $(sliderNearId), far = $(sliderFarId), secs = $(sliderSecsId);
+  const nearVal = $(sliderNearId + "-val"), farVal = $(sliderFarId + "-val"), secsVal = $(sliderSecsId + "-val");
+
+  // 预设选中 → 同步滑块
+  radios.forEach(r => r.addEventListener("change", () => {
+    const p = THRESHOLD_PRESETS[r.value];
+    if (!p) return;
+    near.value = p.near; far.value = p.far; secs.value = p.secs;
+    nearVal.textContent = p.near; farVal.textContent = p.far; secsVal.textContent = p.secs;
+  }));
+
+  // 滑块手动改动 → 取消所有预设选中
+  [near, far, secs].forEach(s => s.addEventListener("input", () => {
+    // 检查是否恰好匹配某个预设
+    const cur = { near: +near.value, far: +far.value, secs: +secs.value };
+    const match = Object.entries(THRESHOLD_PRESETS).find(([_, v]) =>
+      v.near === cur.near && v.far === cur.far && v.secs === cur.secs
+    );
+    radios.forEach(r => {
+      if (match && r.value === match[0]) { r.checked = true; }
+      else { r.checked = false; }
+    });
+  }));
+
+  // 初始化：根据当前滑块值匹配预设
+  const init = { near: +near.value, far: +far.value, secs: +secs.value };
+  const initMatch = Object.entries(THRESHOLD_PRESETS).find(([_, v]) =>
+    v.near === init.near && v.far === init.far && v.secs === init.secs
+  );
+  radios.forEach(r => {
+    r.checked = initMatch ? r.value === initMatch[0] : false;
+  });
+}
+
 bindSlider($("thr-near"), $("thr-near-val"));
 bindSlider($("thr-far"), $("thr-far-val"));
 bindSlider($("thr-near-secs"), $("thr-near-secs-val"));
+setupThresholdPresets("threshold-preset", "thr-near", "thr-far", "thr-near-secs");
 
 function currentEngine() {
   return document.querySelector('input[name="engine"]:checked')?.value || "fast";
@@ -719,7 +763,28 @@ function enterProcessing(folder) {
   const hint = document.getElementById("first-run-hint");
   if (hint) {
     const eng = currentEngine();
-    hint.classList.toggle("hidden", !(eng === "expert" || eng === "tycoon"));
+    const show = eng === "expert" || eng === "tycoon";
+    hint.classList.toggle("hidden", !show);
+    if (show) {
+      const titleEl = document.getElementById("model-progress-title");
+      const subEl = document.getElementById("model-progress-subtitle");
+      const stepsEl = document.getElementById("model-steps");
+      if (titleEl) titleEl.textContent = eng === "expert" ? "首次运行专家模式" : "首次运行土豪模式";
+      if (subEl) subEl.textContent = "正在加载本地模型依赖…";
+      if (stepsEl) {
+        stepsEl.innerHTML = "";
+        const steps = eng === "expert"
+          ? [["dinov2","DINOv2 语义特征"],["nima","NIMA 美学评分"],["musiq","MUSIQ 技术质量"],["clipiqa","CLIP-IQA+ 美学"],["insightface","InsightFace 人脸"]]
+          : [["dinov2","DINOv2 语义特征"],["insightface","InsightFace 人脸"]];
+        steps.forEach(([key, label]) => {
+          const div = document.createElement("div");
+          div.className = "model-step pending";
+          div.dataset.stepKey = key;
+          div.innerHTML = `<span class="model-step-icon">&#9900;</span> ${label}`;
+          stepsEl.appendChild(div);
+        });
+      }
+    }
   }
   $("proc-eta").textContent = "";
   $("proc-counter-scanned").textContent = "0";
@@ -1058,6 +1123,42 @@ async function refreshJob() {
 
   $("proc-elapsed").textContent = j.elapsed > 0 ? `已用 ${fmtElapsed(j.elapsed)}` : "";
 
+  // ---- warming: 模型加载阶段 ----
+  if (j.status === "warming") {
+    const hint = document.getElementById("first-run-hint");
+    hint?.classList.remove("hidden");
+    const subEl = document.getElementById("model-progress-subtitle");
+    if (subEl) subEl.textContent = j.label || "正在加载模型…";
+    // 更新模型步骤列表
+    const stepsEl = document.getElementById("model-steps");
+    if (stepsEl && j.total > 0) {
+      const currentDone = j.done || 0;
+      const stepDivs = stepsEl.querySelectorAll(".model-step");
+      stepDivs.forEach((div, idx) => {
+        if (idx < currentDone) {
+          div.className = "model-step done";
+          div.querySelector(".model-step-icon").textContent = "✓";
+        } else if (idx === currentDone) {
+          div.className = "model-step active";
+          div.querySelector(".model-step-icon").textContent = "⟳";
+        } else {
+          div.className = "model-step pending";
+          div.querySelector(".model-step-icon").textContent = "○";
+        }
+      });
+    }
+    // 进度条显示模型加载进度
+    $("progress-fill").classList.add("indeterminate");
+    $("progress-count").textContent = `${j.done || 0} / ${j.total || 0} 模型`;
+    $("progress-pct").textContent = "";
+    $("progress-label").textContent = j.label || "加载模型…";
+    setStatus(`加载模型 · ${j.done || 0}/${j.total || 0}`, "busy");
+    return;
+  }
+
+  // ---- 非 warming：藏起首次运行提示 ----
+  document.getElementById("first-run-hint")?.classList.add("hidden");
+
   if (j.total > 0) {
     const pct = Math.min(100, Math.round((j.done / j.total) * 100));
     $("progress-fill").classList.remove("indeterminate");
@@ -1066,8 +1167,6 @@ async function refreshJob() {
     $("progress-pct").textContent = pct + "%";
     bumpCounter("proc-counter-scanned", j.done);
     bumpCounter("proc-counter-total", j.total);
-    // 真有进度了 = 依赖装完 + 扫描完毕，藏起首次运行提示
-    document.getElementById("first-run-hint")?.classList.add("hidden");
     setStatus(`分析中 · ${j.done.toLocaleString()} / ${j.total.toLocaleString()}`, "busy");
 
     if (j.done >= 5 && j.status !== "done" && j.elapsed > 1) {
@@ -1175,7 +1274,7 @@ function updatePrescreenStats(status, items) {
     ? `${rejected} 张看起来可以放手`
     : "没有检出可疑照片";
   $("prescreen-sub").textContent = rejected
-    ? `如有想留下的，点一下保留；其余将归入 losers/，完成页仍可召回。`
+    ? `点击可放大查看，确认后点击「保留这张」留下。其余将归入 losers/，完成页仍可召回。`
     : "扫描没发现明显问题，可直接进入选片。";
   setStatus(rejected
     ? `初筛复核 · 待复核 ${pending} 张`
@@ -1228,32 +1327,57 @@ function renderPrescreenGrid() {
     card.className = `auto-reject-card cat-${cat}`;
     if (item.restored) card.classList.add("is-restored");
     card.style.animationDelay = `${Math.min(i * 18, 500)}ms`;
-    card.disabled = !!item.restored;
     card.innerHTML = `
       <img loading="lazy" src="${imgUrl(item.path, 520)}" alt="${item.name}">
       <span class="ar-reason">${item.restored ? "已保留" : item.reason}</span>
       <span class="ar-name">${item.name}</span>`;
-    card.addEventListener("click", async () => {
-      if (card.disabled) return;
-      card.disabled = true;
-      card.classList.add("is-busy");
-      try {
-        await fetchJSON("/api/restore_rejected", {
-          method: "POST",
-          body: JSON.stringify({ group_id: item.group_id, path: item.path }),
-        });
-        item.restored = true;
-        card.classList.remove("is-busy");
-        card.classList.add("is-restored");
-        card.querySelector(".ar-reason").textContent = "已保留";
-        const s = await fetchJSON("/api/status");
-        updatePrescreenStats(s, prescreenItems);
-        toast("已保留，将进入选片");
-      } catch (err) {
-        card.disabled = false;
-        card.classList.remove("is-busy");
-        toast("保留失败：" + err.message);
-      }
+    card.addEventListener("click", () => {
+      if (card.classList.contains("is-busy")) return;
+      const isRestored = card.classList.contains("is-restored");
+      openLightboxWithAction(item, isRestored ? {
+        label: "取消保留",
+        action: async () => {
+          card.classList.add("is-busy");
+          try {
+            await fetchJSON("/api/unrestore_rejected", {
+              method: "POST",
+              body: JSON.stringify({ group_id: item.group_id, path: item.path }),
+            });
+            item.restored = false;
+            card.classList.remove("is-busy", "is-restored");
+            card.querySelector(".ar-reason").textContent = item.reason || "";
+            const s = await fetchJSON("/api/status");
+            updatePrescreenStats(s, prescreenItems);
+            closeLightbox();
+            toast("已取消保留");
+          } catch (err) {
+            card.classList.remove("is-busy");
+            toast("取消保留失败：" + err.message);
+          }
+        },
+      } : {
+        label: "保留这张",
+        action: async () => {
+          card.classList.add("is-busy");
+          try {
+            await fetchJSON("/api/restore_rejected", {
+              method: "POST",
+              body: JSON.stringify({ group_id: item.group_id, path: item.path }),
+            });
+            item.restored = true;
+            card.classList.remove("is-busy");
+            card.classList.add("is-restored");
+            card.querySelector(".ar-reason").textContent = "已保留";
+            const s = await fetchJSON("/api/status");
+            updatePrescreenStats(s, prescreenItems);
+            closeLightbox();
+            toast("已保留，将进入选片");
+          } catch (err) {
+            card.classList.remove("is-busy");
+            toast("保留失败：" + err.message);
+          }
+        },
+      });
     });
     grid.appendChild(card);
   });
@@ -1608,6 +1732,7 @@ async function refreshPreview(status) {
 bindSlider($("prv-near"), $("prv-near-val"));
 bindSlider($("prv-far"), $("prv-far-val"));
 bindSlider($("prv-secs"), $("prv-secs-val"));
+setupThresholdPresets("prv-threshold-preset", "prv-near", "prv-far", "prv-secs");
 
 $("btn-regroup").addEventListener("click", async () => {
   const btn = $("btn-regroup");
@@ -2346,37 +2471,67 @@ async function renderAutoRejectedGrid(options = {}) {
       card.className = "auto-reject-card";
       if (item.restored) card.classList.add("is-restored");
       card.style.animationDelay = `${Math.min(i * 20, 500)}ms`;
-      card.disabled = !!item.restored;
       card.innerHTML = `
         <img loading="lazy" src="${imgUrl(item.path, 520)}" alt="${item.name}">
         <span class="ar-reason">${item.restored ? "已保留" : item.reason}</span>
         <span class="ar-name">${item.name}</span>`;
-      card.addEventListener("click", async () => {
-        if (card.disabled) return;
-        card.disabled = true;
-        card.classList.add("is-busy");
-        try {
-          await fetchJSON("/api/restore_rejected", {
-            method: "POST",
-            body: JSON.stringify({ group_id: item.group_id, path: item.path }),
-          });
-          card.classList.remove("is-busy");
-          card.classList.add("is-restored");
-          card.querySelector(".ar-reason").textContent = "已保留";
-          if (refreshWinners) await renderWinnersAlbum();
-          const s = await fetchJSON("/api/status");
-          if ($("view-done").classList.contains("active")) {
-            $("stat-winners").textContent = s.winner_count || 0;
-            $("stat-losers").textContent = s.loser_count || 0;
-            $("done-to").textContent = (s.winner_count || 0).toLocaleString();
-          }
-          if (onRestored) await onRestored(item, s);
-          toast("已保留，将进入选片");
-        } catch (err) {
-          card.disabled = false;
-          card.classList.remove("is-busy");
-          toast("保留失败：" + err.message);
-        }
+      card.addEventListener("click", () => {
+        if (card.classList.contains("is-busy")) return;
+        const isRestored = card.classList.contains("is-restored");
+        openLightboxWithAction(item, isRestored ? {
+          label: "取消保留",
+          action: async () => {
+            card.classList.add("is-busy");
+            try {
+              await fetchJSON("/api/unrestore_rejected", {
+                method: "POST",
+                body: JSON.stringify({ group_id: item.group_id, path: item.path }),
+              });
+              card.classList.remove("is-busy", "is-restored");
+              card.querySelector(".ar-reason").textContent = item.reason || "";
+              if (refreshWinners) await renderWinnersAlbum();
+              const s = await fetchJSON("/api/status");
+              if ($("view-done").classList.contains("active")) {
+                $("stat-winners").textContent = s.winner_count || 0;
+                $("stat-losers").textContent = s.loser_count || 0;
+                $("done-to").textContent = (s.winner_count || 0).toLocaleString();
+              }
+              if (onRestored) await onRestored(item, s);
+              closeLightbox();
+              toast("已取消保留");
+            } catch (err) {
+              card.classList.remove("is-busy");
+              toast("取消保留失败：" + err.message);
+            }
+          },
+        } : {
+          label: "保留这张",
+          action: async () => {
+            card.classList.add("is-busy");
+            try {
+              await fetchJSON("/api/restore_rejected", {
+                method: "POST",
+                body: JSON.stringify({ group_id: item.group_id, path: item.path }),
+              });
+              card.classList.remove("is-busy");
+              card.classList.add("is-restored");
+              card.querySelector(".ar-reason").textContent = "已保留";
+              if (refreshWinners) await renderWinnersAlbum();
+              const s = await fetchJSON("/api/status");
+              if ($("view-done").classList.contains("active")) {
+                $("stat-winners").textContent = s.winner_count || 0;
+                $("stat-losers").textContent = s.loser_count || 0;
+                $("done-to").textContent = (s.winner_count || 0).toLocaleString();
+              }
+              if (onRestored) await onRestored(item, s);
+              closeLightbox();
+              toast("已保留，将进入选片");
+            } catch (err) {
+              card.classList.remove("is-busy");
+              toast("保留失败：" + err.message);
+            }
+          },
+        });
       });
       grid.appendChild(card);
     });
@@ -2523,18 +2678,84 @@ async function reopenGroup(groupId, groupSize, btn) {
 // Lightbox
 // =================================================================
 let lbItem = null;
+let lbScale = 1;
+let lbPanX = 0, lbPanY = 0;
+let lbDragging = false, lbDragStartX = 0, lbDragStartY = 0, lbPanStartX = 0, lbPanStartY = 0;
+
+function lbApplyTransform() {
+  $("lb-img").style.transform = `translate(${lbPanX}px, ${lbPanY}px) scale(${lbScale})`;
+}
+
+function lbResetView() {
+  lbScale = 1;
+  lbPanX = 0;
+  lbPanY = 0;
+  const img = $("lb-img");
+  img.style.transform = "";
+  img.style.maxWidth = "92%";
+  img.style.maxHeight = "88%";
+  img.style.cursor = "zoom-in";
+}
+
+function _loadExif(path) {
+  const el = $("lb-exif");
+  el.classList.add("hidden");
+  el.textContent = "";
+  fetch("/api/image_exif?path=" + encodeURIComponent(path))
+    .then(r => r.ok ? r.json() : {})
+    .then(info => {
+      const parts = [];
+      if (info.camera) parts.push(info.camera);
+      if (info.lens) parts.push(info.lens);
+      if (info.focal) parts.push(info.focal);
+      if (info.aperture) parts.push(info.aperture);
+      if (info.shutter) parts.push(info.shutter);
+      if (info.iso) parts.push(info.iso);
+      if (info.dim) parts.push(info.dim);
+      if (!parts.length) return;
+      el.textContent = parts.join("  ·  ");
+      el.classList.remove("hidden");
+    })
+    .catch(() => {});
+}
+
 function openLightbox(item) {
   lbItem = item;
   $("lb-img").src = imgUrl(item.path);
   $("lb-caption").textContent = item.name || basename(item.path);
   $("lightbox").classList.remove("hidden");
+  $("lb-action").classList.add("hidden");
+  lbResetView();
   lockScroll();
+  _loadExif(item.path);
 }
+
+function openLightboxWithAction(item, action) {
+  lbItem = item;
+  $("lb-img").src = imgUrl(item.path);
+  $("lb-caption").textContent = item.name || basename(item.path);
+  const btn = $("lb-action");
+  btn.textContent = action.label;
+  btn.classList.remove("hidden", "unrestore");
+  if (action.label.includes("取消")) btn.classList.add("unrestore");
+  btn.onclick = action.action;
+  $("lightbox").classList.remove("hidden");
+  lbResetView();
+  lockScroll();
+  _loadExif(item.path);
+}
+
 function closeLightbox() {
   $("lightbox").classList.add("hidden");
   $("lb-img").removeAttribute("src");
+  $("lb-action").classList.add("hidden");
+  $("lb-action").onclick = null;
+  $("lb-exif").classList.add("hidden");
+  $("lb-exif").textContent = "";
+  lbResetView();
   unlockScroll();
 }
+
 $("lb-close").addEventListener("click", closeLightbox);
 $("lightbox").addEventListener("click", (e) => {
   if (e.target.id === "lightbox") closeLightbox();
@@ -2542,7 +2763,51 @@ $("lightbox").addEventListener("click", (e) => {
 $("lb-original").addEventListener("click", () => {
   if (!lbItem) return;
   $("lb-img").src = originalUrl(lbItem.path);
+  lbResetView();
   toast("加载原图中…");
+});
+
+// 滚轮缩放：以鼠标位置为中心
+$("lightbox").addEventListener("wheel", (e) => {
+  if ($("lightbox").classList.contains("hidden")) return;
+  e.preventDefault();
+  const factor = e.deltaY < 0 ? 1.15 : 1 / 1.15;
+  const newScale = Math.max(0.25, Math.min(lbScale * factor, 20));
+  const rect = $("lb-img").getBoundingClientRect();
+  const cx = e.clientX - rect.left - rect.width / 2;
+  const cy = e.clientY - rect.top - rect.height / 2;
+  const ratio = newScale / lbScale;
+  lbPanX = cx - ratio * (cx - lbPanX);
+  lbPanY = cy - ratio * (cy - lbPanY);
+  lbScale = newScale;
+  const img = $("lb-img");
+  img.style.maxWidth = "none";
+  img.style.maxHeight = "none";
+  img.style.cursor = lbScale > 1 ? "grab" : "zoom-in";
+  lbApplyTransform();
+}, { passive: false });
+
+// 拖拽平移（缩放 > 1 时）
+$("lb-img").addEventListener("mousedown", (e) => {
+  if (lbScale <= 1) return;
+  e.preventDefault();
+  lbDragging = true;
+  lbDragStartX = e.clientX;
+  lbDragStartY = e.clientY;
+  lbPanStartX = lbPanX;
+  lbPanStartY = lbPanY;
+  $("lb-img").style.cursor = "grabbing";
+});
+document.addEventListener("mousemove", (e) => {
+  if (!lbDragging) return;
+  lbPanX = lbPanStartX + (e.clientX - lbDragStartX);
+  lbPanY = lbPanStartY + (e.clientY - lbDragStartY);
+  lbApplyTransform();
+});
+document.addEventListener("mouseup", () => {
+  if (!lbDragging) return;
+  lbDragging = false;
+  $("lb-img").style.cursor = lbScale > 1 ? "grab" : "zoom-in";
 });
 
 // =================================================================
@@ -2776,7 +3041,10 @@ async function wmOpen() {
   $("wm-open-out").classList.add("hidden");
   $("wm-start").classList.remove("hidden");
   $("wm-start").disabled = false;
-  $("wm-start").textContent = "开始导出";
+  $("wm-start").textContent = "开始导出全部";
+  $("wm-export-one").classList.remove("hidden");
+  $("wm-export-one").disabled = false;
+  $("wm-export-one").textContent = "导出这张";
   $("wm-cancel").textContent = "关闭";
   await wmLoadTemplates();
   if (!WM.templates.find((t) => t.id === WM.template)) {
@@ -2808,6 +3076,7 @@ async function wmStart() {
     WM.isExporting = true;
     $("wm-progress").classList.remove("hidden");
     $("wm-start").classList.add("hidden");
+    $("wm-export-one").classList.add("hidden");
     $("wm-stop").classList.remove("hidden");
     $("wm-progress-text").textContent = `开始导出 ${res.total} 张…`;
     $("wm-progress-fill").style.width = "0%";
@@ -2838,6 +3107,7 @@ async function wmPoll() {
         ` · 用时 ${Math.round(s.elapsed)}s`;
       $("wm-stop").classList.add("hidden");
       $("wm-open-out").classList.remove("hidden");
+      $("wm-export-one").classList.remove("hidden");
       $("wm-cancel").textContent = "完成";
       toast(`水印导出完成（${s.ok} 张）`);
     } else if (s.status === "cancelled") {
@@ -2847,6 +3117,7 @@ async function wmPoll() {
       $("wm-start").classList.remove("hidden");
       $("wm-start").disabled = false;
       $("wm-start").textContent = "重新开始";
+      $("wm-export-one").classList.remove("hidden");
     } else if (s.status === "error") {
       WM.isExporting = false;
       $("wm-progress-text").textContent = `出错：${s.error || "未知"}`;
@@ -2854,6 +3125,7 @@ async function wmPoll() {
       $("wm-start").classList.remove("hidden");
       $("wm-start").disabled = false;
       $("wm-start").textContent = "重新开始";
+      $("wm-export-one").classList.remove("hidden");
     }
   } catch (e) {
     WM.pollHandle = setTimeout(wmPoll, 1500);
@@ -2874,12 +3146,44 @@ async function wmOpenOut() {
   } catch (e) { toast("打开失败：" + e.message); }
 }
 
+async function wmExportOne() {
+  try {
+    $("wm-export-one").disabled = true;
+    $("wm-export-one").textContent = "导出中…";
+    const res = await fetch("/api/watermark/export_one", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(wmCfg()),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || `HTTP ${res.status}`);
+    }
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    const disposition = res.headers.get("Content-Disposition") || "";
+    const match = disposition.match(/filename="?(.+?)"?$/);
+    a.download = match ? match[1] : `watermark_${WM.previewIdx + 1}.jpg`;
+    a.click();
+    URL.revokeObjectURL(url);
+    toast("已导出当前照片");
+  } catch (e) {
+    toast("导出失败：" + e.message);
+  } finally {
+    $("wm-export-one").disabled = false;
+    $("wm-export-one").textContent = "导出这张";
+  }
+}
+
 // 绑定事件
 $("btn-watermark").addEventListener("click", wmOpen);
 $("wm-close").addEventListener("click", wmClose);
 $("wm-cancel").addEventListener("click", wmClose);
 $("wm-start").addEventListener("click", wmStart);
 $("wm-stop").addEventListener("click", wmStop);
+$("wm-export-one").addEventListener("click", wmExportOne);
 $("wm-open-out").addEventListener("click", wmOpenOut);
 $("wm-prev").addEventListener("click", () => {
   if (WM.totalWinners <= 1) return;

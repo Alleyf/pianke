@@ -1183,6 +1183,11 @@ span.sc-item { color: var(--ink-faint); }
   border-radius: 8px;
   box-shadow: 0 30px 60px rgba(0, 0, 0, 0.5);
   animation: lbZoom .35s var(--ease-out);
+  transform-origin: center center;
+  transition: transform .08s ease-out;
+  cursor: zoom-in;
+  user-select: none;
+  -webkit-user-drag: none;
 }
 @keyframes lbZoom {
   from { opacity: 0; transform: scale(0.94); }
@@ -1195,7 +1200,24 @@ span.sc-item { color: var(--ink-faint); }
   font-family: var(--font-mono);
   font-size: 12px;
   letter-spacing: 0.04em;
+  max-width: 80%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
+.lb-exif {
+  position: absolute;
+  bottom: 48px; left: 50%; transform: translateX(-50%);
+  color: rgba(245, 242, 234, 0.5);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  max-width: 80%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.lb-exif.hidden { display: none; }
 .lb-close {
   position: absolute;
   top: 22px; right: 24px;
@@ -1885,7 +1907,7 @@ span.sc-item { color: var(--ink-faint); }
 }
 .skipped-section .dim { color: var(--ink-faint); }
 
-.lb-original {
+.lb-original, .lb-action {
   position: absolute;
   top: 22px; left: 24px;
   background: rgba(255,255,255,0.08);
@@ -1900,6 +1922,23 @@ span.sc-item { color: var(--ink-faint); }
   transition: background .2s var(--ease);
 }
 .lb-original:hover { background: rgba(255,255,255,0.18); }
+.lb-action {
+  left: 80px;
+  background: rgba(204, 120, 92, 0.25);
+  border-color: rgba(204, 120, 92, 0.45);
+  color: #f5f2e6;
+  font-weight: 600;
+  font-size: 12px;
+  font-family: var(--font-serif);
+  letter-spacing: 0.03em;
+}
+.lb-action:hover { background: rgba(204, 120, 92, 0.4); }
+.lb-action.unrestore {
+  background: rgba(80, 107, 79, 0.2);
+  border-color: rgba(80, 107, 79, 0.4);
+}
+.lb-action.unrestore:hover { background: rgba(80, 107, 79, 0.35); }
+.lb-action.hidden { display: none; }
 
 /* =========================================================
    Toast / Modal
@@ -2159,6 +2198,10 @@ body:has(#view-done.active) .status-badge {
   color: var(--ink-faint);
 }
 .adv-deep[open] summary::before { content: "▾ "; }
+
+.threshold-fine-tune {
+  margin-top: 8px;
+}
 
 /* ---------------- 处理页：三股并行计数器 ---------------- */
 .proc-counters {
@@ -2554,9 +2597,9 @@ body:has(#view-processing.active) .status-badge {
   margin: 0 0 12px;
   padding: 10px 14px;
   border-radius: 8px;
-  border: 1px solid rgba(250, 204, 21, 0.35);
-  background: rgba(250, 204, 21, 0.08);
-  color: #fde68a;
+  border: 1px solid var(--warn-soft, rgba(250, 204, 21, 0.45));
+  background: rgba(250, 204, 21, 0.14);
+  color: var(--warn);
   font-size: 13px;
   line-height: 1.55;
 }
@@ -2565,9 +2608,50 @@ body:has(#view-processing.active) .status-badge {
 .first-run-hint-text { flex: 1; }
 .first-run-hint-text strong {
   display: block;
-  color: #fef3c7;
+  color: var(--warn);
   font-weight: 600;
   margin-bottom: 2px;
+}
+
+/* ---- 模型加载步骤列表 ---- */
+.model-steps {
+  margin-top: 8px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.8;
+}
+.model-step {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--ink-faint);
+  transition: color .2s;
+}
+.model-step .model-step-icon {
+  display: inline-block;
+  width: 1.2em;
+  text-align: center;
+  flex-shrink: 0;
+}
+.model-step.done {
+  color: var(--good);
+}
+.model-step.done .model-step-icon {
+  color: var(--good);
+}
+.model-step.active {
+  color: var(--accent-deep);
+}
+.model-step.active .model-step-icon {
+  animation: pulse-step 1.2s ease-in-out infinite;
+}
+.model-step.pending {
+  color: var(--ink-faint);
+  opacity: .5;
+}
+@keyframes pulse-step {
+  0%, 100% { opacity: 1; }
+  50% { opacity: .3; }
 }
 
 .proc-terminal {

@@ -59,7 +59,7 @@
 
 适合未安装 Python 环境或不熟悉命令行的用户。
 
-1. [下载项目 ZIP 压缩包](https://github.com/zhaoyue4810/pianke/archive/refs/heads/main.zip) 并解压到本地。
+1. [下载项目 ZIP 压缩包](https://github.com/Alleyf/pianke/archive/refs/heads/main.zip) 并解压到本地。
 2. 双击运行对应的启动器脚本：
 
 | 系统 | 启动脚本 | 首次运行安全提示过白方式 |
@@ -262,7 +262,7 @@ Windows 系统可能需要安装微软官方的 HEIF 扩展才能正常在浏览
 
 ## 反馈与贡献
 
-欢迎通过 [GitHub Issues](https://github.com/zhaoyue4810/pianke/issues) 提交反馈或建议。
+欢迎通过 [GitHub Issues](https://github.com/Alleyf/pianke/issues) 提交反馈或建议。
 
 # 个人微信
 15828377122
