@@ -409,13 +409,13 @@ def require_expert_capabilities() -> None:
 
 
 def require_tycoon_capabilities() -> None:
-    """土豪模式：DINOv2 + InsightFace（分组依赖）必备；NIMA/MUSIQ/CLIP 不要。"""
+    """天眼模式：DINOv2 + InsightFace（分组依赖）必备；NIMA/MUSIQ/CLIP 不要。"""
     caps = capabilities()
     needed = ["dinov2", "face_id"]
     missing = [k for k in needed if not caps.get(k)]
     if missing:
         raise VisionUnavailable(
-            f"土豪模式缺少依赖：{', '.join(missing)}。请按 requirements.txt 安装。"
+            f"天眼模式缺少依赖：{', '.join(missing)}。请按 requirements.txt 安装。"
         )
 
 
@@ -459,7 +459,7 @@ def prewarm_all(progress_cb: Callable[[str, int, int], None] | None = None) -> N
 
 
 def prewarm_tycoon(progress_cb: Callable[[str, int, int], None] | None = None) -> None:
-    """土豪模式预热：仅 DINOv2 + InsightFace（分组依赖）。
+    """天眼模式预热：仅 DINOv2 + InsightFace（分组依赖）。
 
     progress_cb(step, done, total): 每个模型开始加载前回调一次，done 表示已完成的模型数。
     """

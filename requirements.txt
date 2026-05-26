@@ -39,6 +39,6 @@ onnxruntime>=1.16,<1.22
 pyiqa>=0.1.10
 timm>=0.9
 
-# 土豪模式 LLM 初筛（火山引擎 Ark，OpenAI 兼容协议）
+# 天眼模式 LLM 初筛（火山引擎 Ark，OpenAI 兼容协议）
 openai>=1.40
 piexif>=1.1.3
