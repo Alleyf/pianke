@@ -29,7 +29,7 @@
   },
   "bundle": {
     "active": true,
-    "targets": "all",
+    "targets": ["nsis", "dmg", "deb"],
     "category": "Photography",
     "publisher": "Alleyf & zhaoyue4810",
     "homepage": "https://github.com/Alleyf/pianke",
@@ -49,11 +49,6 @@
       "icons/icon.ico"
     ],
     "windows": {
-      "wix": {
-        "language": "zh-CN",
-        "bannerPath": "installer-assets/wix-banner.bmp",
-        "dialogImagePath": "installer-assets/wix-dialog.bmp"
-      },
       "nsis": {
         "installerIcon": "icons/icon.ico",
         "uninstallerIcon": "icons/icon.ico",
