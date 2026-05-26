@@ -360,22 +360,79 @@ document.querySelectorAll(".engine-opt").forEach(el => {
 // ---------- 天眼模式模型选择 + API Key 管理（多 LLM 提供商） ----------
 let llmModelsLoaded = false;
 let currentProvider = localStorage.getItem("pic_selecter.llm_provider") || "ark";
+let llmProviders = {}; // {provider_id: {display_name, _user_defined, has_key, ...}}
+
+async function loadLlmProviders() {
+  try {
+    const r = await fetch("/api/llm_providers");
+    const d = await r.json();
+    if (!r.ok) return;
+    llmProviders = d;
+    const select = $("llm-provider");
+    if (!select) return;
+    // 保存当前值
+    const prev = select.value;
+    select.innerHTML = "";
+    for (const [pid, info] of Object.entries(d)) {
+      const opt = document.createElement("option");
+      opt.value = pid;
+      opt.textContent = info.display_name;
+      opt.dataset.userDefined = info._user_defined ? "1" : "0";
+      select.appendChild(opt);
+    }
+    // 恢复选择
+    const saved = localStorage.getItem("pic_selecter.llm_provider");
+    if (saved && d[saved]) {
+      select.value = saved;
+      currentProvider = saved;
+    } else if (d["ark"]) {
+      select.value = "ark";
+      currentProvider = "ark";
+    }
+    updateProviderUI();
+  } catch (e) {
+    console.warn("loadLlmProviders failed:", e);
+  }
+}
+
+function updateProviderUI() {
+  const provider = currentProvider;
+  const info = llmProviders[provider];
+  if (!info) return;
+  const needsBaseUrl = provider === "custom" || info._user_defined;
+  $("custom-base-url-row").style.display = needsBaseUrl ? "" : "none";
+  // 更新 hint
+  $("llm-hint").textContent = `图片会上传至${info.display_name}服务器进行判定`;
+  // 更新 key placeholder
+  $("llm-key-input").placeholder = `粘贴 ${info.display_name} API Key`;
+  // 更新 base_url 输入框值
+  if (needsBaseUrl && info.base_url) {
+    $("llm-custom-base-url").value = info.base_url;
+  }
+  // 删除按钮：仅用户自定义 provider 显示
+  const delBtn = $("btn-del-provider");
+  if (delBtn) delBtn.style.display = info._user_defined ? "" : "none";
+}
+
+// Provider change handler
+$("llm-provider")?.addEventListener("change", () => {
+  const provider = $("llm-provider").value;
+  currentProvider = provider;
+  localStorage.setItem("pic_selecter.llm_provider", provider);
+  updateProviderUI();
+  refreshLlmKeyStatus();
+  loadLlmModels();
+});
 
 function syncTycoonPicker(engine) {
   const picker = $("tycoon-model-picker");
   if (!picker) return;
   if (engine === "tycoon") {
     picker.hidden = false;
-    // Restore saved provider
-    const savedProvider = localStorage.getItem("pic_selecter.llm_provider");
-    if (savedProvider && $("llm-provider")) {
-      $("llm-provider").value = savedProvider;
-      currentProvider = savedProvider;
-    }
-    // Show/hide custom base URL field
-    $("custom-base-url-row").style.display = currentProvider === "custom" ? "" : "none";
-    refreshLlmKeyStatus();
-    loadLlmModels();
+    loadLlmProviders().then(() => {
+      refreshLlmKeyStatus();
+      loadLlmModels();
+    });
   } else {
     picker.hidden = true;
   }
@@ -408,16 +465,25 @@ async function saveLlmKey() {
     $("llm-key-input")?.focus();
     return;
   }
+  const info = llmProviders[provider];
+  const needsBaseUrl = provider === "custom" || (info && info._user_defined);
+  if (needsBaseUrl) {
+    const bu = $("llm-custom-base-url").value.trim();
+    if (!bu) {
+      toast.error("请先填写 Base URL");
+      $("llm-custom-base-url")?.focus();
+      return;
+    }
+  }
   const btn = $("btn-save-llm-key");
   btn.disabled = true;
   btn.textContent = "验证中…";
   try {
-    let url = `/api/llm_key/${provider}`;
     const payload = { key };
-    if (provider === "custom") {
+    if (needsBaseUrl) {
       payload.base_url = $("llm-custom-base-url").value.trim();
     }
-    const r = await fetch(url, {
+    const r = await fetch(`/api/llm_key/${provider}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
@@ -453,39 +519,61 @@ async function clearLlmKey() {
   }
 }
 
-// Provider change handler
-$("llm-provider").addEventListener("change", () => {
+// ── 添加自定义 Provider ──
+$("btn-add-provider")?.addEventListener("click", () => {
+  const name = prompt("Provider ID（字母、数字、连字符，2-40 字符）：");
+  if (!name) return;
+  const displayName = prompt("显示名称（如留空将使用 ID）：") || "";
+  const baseUrl = prompt("Base URL（如 https://api.example.com/v1）：");
+  if (!baseUrl) return;
+  addCustomProvider(name.trim(), displayName.trim(), baseUrl.trim());
+});
+
+async function addCustomProvider(name, displayName, baseUrl) {
+  try {
+    const r = await fetch("/api/llm_providers", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, display_name: displayName, base_url: baseUrl }),
+    });
+    const d = await r.json();
+    if (!r.ok || !d.ok) {
+      toast.error(d.error || "添加失败");
+      return;
+    }
+    toast.success(`已添加 ${d.provider_id}`);
+    // 切换到新 provider
+    await loadLlmProviders();
+    $("llm-provider").value = name;
+    currentProvider = name;
+    localStorage.setItem("pic_selecter.llm_provider", name);
+    refreshLlmKeyStatus();
+  } catch (e) {
+    toast.error("添加失败：" + e.message);
+  }
+}
+
+// ── 删除自定义 Provider ──
+$("btn-del-provider")?.addEventListener("click", async () => {
   const provider = $("llm-provider").value;
-  currentProvider = provider;
-  localStorage.setItem("pic_selecter.llm_provider", provider);
-
-  // Show/hide custom base URL field
-  $("custom-base-url-row").style.display = provider === "custom" ? "" : "none";
-
-  // Update hint text
-  const providerNames = {
-    ark: "火山引擎",
-    openai: "OpenAI",
-    siliconflow: "SiliconFlow",
-    deepseek: "DeepSeek",
-    custom: "第三方",
-  };
-  const name = providerNames[provider] || "第三方";
-  $("llm-hint").textContent = `图片会上传至${name}服务器进行判定`;
-
-  // Update key input placeholder
-  const keyPlaceholders = {
-    ark: "粘贴火山引擎 API Key",
-    openai: "粘贴 OpenAI API Key",
-    siliconflow: "粘贴 SiliconFlow API Key",
-    deepseek: "粘贴 DeepSeek API Key",
-    custom: "粘贴 API Key",
-  };
-  $("llm-key-input").placeholder = keyPlaceholders[provider] || "粘贴 API Key";
-
-  // Refresh key status and model list
-  refreshLlmKeyStatus();
-  loadLlmModels();
+  const info = llmProviders[provider];
+  if (!info || !info._user_defined) return;
+  const ok = await confirmDialog("删除 Provider？", `确定删除「${info.display_name}」吗？其 API Key 和配置将被清除。`);
+  if (!ok) return;
+  try {
+    const r = await fetch(`/api/llm_providers/${provider}`, { method: "DELETE" });
+    const d = await r.json();
+    if (!r.ok || !d.ok) {
+      toast.error(d.error || "删除失败");
+      return;
+    }
+    toast.success("已删除");
+    await loadLlmProviders();
+    refreshLlmKeyStatus();
+    loadLlmModels();
+  } catch (e) {
+    toast.error("删除失败：" + e.message);
+  }
 });
 
 // Wire up button event listeners
@@ -560,8 +648,7 @@ async function loadLlmModels() {
     }
     // 选中后同步到输入框
     if (select.value) input.value = select.value;
-    const providerNames = { ark: "火山引擎", openai: "OpenAI", siliconflow: "SiliconFlow", deepseek: "DeepSeek", custom: "第三方" };
-    const pName = providerNames[provider] || "第三方";
+    const pName = llmProviders[provider]?.display_name || "第三方";
     $("llm-hint").textContent = `已就绪。图片会上传至${pName}服务器进行判定。`;
     llmModelsLoaded = true;
     // 有模型就自动验证
@@ -2804,10 +2891,28 @@ $("btn-export-log").addEventListener("click", async () => {
     const res = await fetch("/api/export_log");
     if (!res.ok) throw new Error(res.status + " " + res.statusText);
     const blob = await res.blob();
+    const filename = "pianke-log.txt";
+    // 优先使用 Save File Picker 让用户选择保存位置
+    if (window.showSaveFilePicker) {
+      try {
+        const handle = await window.showSaveFilePicker({
+          suggestedName: filename,
+          types: [{ description: "Text File", accept: { "text/plain": [".txt"] } }],
+        });
+        const writable = await handle.createWritable();
+        await writable.write(blob);
+        await writable.close();
+        toast("日志已导出");
+        return;
+      } catch (pickerErr) {
+        if (pickerErr.name === "AbortError") return;
+      }
+    }
+    // 降级：直接下载
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = "pianke-log.txt";
+    a.download = filename;
     document.body.appendChild(a);
     a.click();
     a.remove();

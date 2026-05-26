@@ -42,15 +42,15 @@ from PIL import Image
 logger = logging.getLogger("pic_selecter")
 
 # ── Provider 注册表 ──────────────────────────────────────────────
-# 每个 Provider 只需要 base_url + display_name；其余行为走默认逻辑。
-# supports_list: 该 Provider 是否支持 /models 端点。不支持的只能手动输入模型 ID。
-PROVIDERS = {
+# 内置 Provider（不可删除），运行时与用户自定义合并为 PROVIDERS。
+
+_BUILTIN_PROVIDERS = {
     "ark": {
         "display_name": "火山引擎 Ark",
         "base_url": "https://ark.cn-beijing.volces.com/api/v3",
         "env_key": "ARK_API_KEY",
         "supports_list": True,
-        "filter_pattern": "Seed",  # 只显示 Seed 系列模型
+        "filter_pattern": "Seed",
         "extra_body": {"thinking": {"type": "disabled"}},
     },
     "openai": {
@@ -58,7 +58,7 @@ PROVIDERS = {
         "base_url": "https://api.openai.com/v1",
         "env_key": "OPENAI_API_KEY",
         "supports_list": True,
-        "filter_pattern": None,  # 显示全部视觉模型
+        "filter_pattern": None,
         "extra_body": None,
     },
     "siliconflow": {
@@ -79,13 +79,91 @@ PROVIDERS = {
     },
     "custom": {
         "display_name": "自定义",
-        "base_url": "",  # 用户自行填写
+        "base_url": "",
         "env_key": "CUSTOM_LLM_API_KEY",
         "supports_list": False,
         "filter_pattern": None,
         "extra_body": None,
     },
 }
+
+_CUSTOM_PROVIDERS_FILE = os.path.join(
+    os.path.expanduser("~"), ".config", "pic_selecter", "llm_keys", "custom_providers.json"
+)
+
+
+def _load_custom_providers() -> dict:
+    """从 JSON 文件读取用户自定义 provider。"""
+    if not os.path.isfile(_CUSTOM_PROVIDERS_FILE):
+        return {}
+    try:
+        data = json.loads(open(_CUSTOM_PROVIDERS_FILE, "r", encoding="utf-8").read())
+        if not isinstance(data, dict):
+            return {}
+        return data
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _save_custom_providers(providers: dict) -> None:
+    """将用户自定义 provider 写入 JSON 文件。"""
+    dirpath = os.path.dirname(_CUSTOM_PROVIDERS_FILE)
+    os.makedirs(dirpath, exist_ok=True)
+    with open(_CUSTOM_PROVIDERS_FILE, "w", encoding="utf-8") as f:
+        json.dump(providers, f, ensure_ascii=False, indent=2)
+
+
+def _merge_providers() -> dict:
+    """内置 + 用户自定义合并为完整 PROVIDERS 字典。"""
+    merged = dict(_BUILTIN_PROVIDERS)
+    custom = _load_custom_providers()
+    for pid, cfg in custom.items():
+        merged[pid] = {
+            "display_name": cfg.get("display_name", pid),
+            "base_url": cfg.get("base_url", ""),
+            "env_key": cfg.get("env_key", f"CUSTOM_LLM_{pid.upper()}_API_KEY"),
+            "supports_list": False,
+            "filter_pattern": None,
+            "extra_body": None,
+            "_user_defined": True,
+        }
+    return merged
+
+
+PROVIDERS = _merge_providers()
+
+
+def register_custom_provider(provider_id: str, display_name: str, base_url: str) -> None:
+    """添加用户自定义 Provider。"""
+    import re
+    if provider_id in _BUILTIN_PROVIDERS:
+        raise ValueError(f"Provider ID 与内置冲突: {provider_id}")
+    if not re.match(r"^[a-zA-Z0-9_-]{2,40}$", provider_id):
+        raise ValueError("Provider ID 仅允许字母、数字、连字符、下划线（2-40 字符）")
+    if not base_url.strip():
+        raise ValueError("Base URL 不能为空")
+    custom = _load_custom_providers()
+    custom[provider_id] = {
+        "display_name": display_name.strip() or provider_id,
+        "base_url": base_url.strip(),
+    }
+    _save_custom_providers(custom)
+    # 刷新模块级 PROVIDERS
+    global PROVIDERS
+    PROVIDERS = _merge_providers()
+
+
+def remove_custom_provider(provider_id: str) -> None:
+    """删除用户自定义 Provider。"""
+    if provider_id in _BUILTIN_PROVIDERS:
+        raise ValueError(f"内置 Provider 不可删除: {provider_id}")
+    custom = _load_custom_providers()
+    if provider_id not in custom:
+        raise ValueError(f"Provider 不存在: {provider_id}")
+    del custom[provider_id]
+    _save_custom_providers(custom)
+    global PROVIDERS
+    PROVIDERS = _merge_providers()
 
 # ============================================================
 # Prompt v5：两套档位，标准 / 进阶，由 prescreen_strength 路由
@@ -829,6 +907,68 @@ def _is_rate_limit_exc(exc: BaseException) -> bool:
     ))
 
 
+def _parse_llm_response(content: str) -> dict:
+    """多层容错解析 LLM 响应，返回 {"verdict": "pass"|"reject", "reason": str}。
+
+    三层策略：
+    1. 提取 JSON（strip markdown 代码块 → json.loads）
+    2. 正则兜底：从文本中搜索 {"verdict":...} 片段
+    3. 关键词兜底：从自然语言中推断 verdict + reason
+    """
+    # --- Layer 1: 清理 markdown 代码块后直接解析 ---
+    stripped = content
+    if stripped.startswith("```"):
+        lines = stripped.split("\n")
+        lines = [l for l in lines if not l.startswith("```")]
+        stripped = "\n".join(lines).strip()
+
+    try:
+        obj = json.loads(stripped)
+        verdict = str(obj.get("verdict", "")).lower().strip()
+        reason = str(obj.get("reason", "")).strip()
+        if verdict in {"pass", "reject"} and reason:
+            if len(reason) > 40:
+                reason = reason[:38] + "…"
+            return {"verdict": verdict, "reason": reason}
+    except (json.JSONDecodeError, ValueError):
+        pass
+
+    # --- Layer 2: 正则搜索 JSON 片段 ---
+    import re
+    m = re.search(r'\{[^{}]*"verdict"\s*:\s*"([^"]+)"[^{}]*"reason"\s*:\s*"([^"]*)"[^{}]*\}', content, re.IGNORECASE)
+    if m:
+        verdict = m.group(1).lower().strip()
+        reason = m.group(2).strip()
+        if verdict in {"pass", "reject"}:
+            if not reason:
+                reason = "AI 判定"
+            if len(reason) > 40:
+                reason = reason[:38] + "…"
+            return {"verdict": verdict, "reason": reason}
+
+    # --- Layer 3: 关键词推断 ---
+    lower = content.lower()
+    # 先尝试找到 verdict 相关的关键词
+    verdict = None
+    if any(kw in lower for kw in ("reject", "拒绝", "废片", "放手", "不合格", "不通过")):
+        verdict = "reject"
+    elif any(kw in lower for kw in ("pass", "通过", "保留", "合格", "留下", "不错")):
+        verdict = "pass"
+
+    if verdict:
+        # 尝试提取 reason（找 verdict 关键词后面的简短描述）
+        reason_m = re.search(r'"reason"\s*:\s*"([^"]*)"', content, re.IGNORECASE)
+        if reason_m and reason_m.group(1).strip():
+            reason = reason_m.group(1).strip()
+        else:
+            reason = "AI 判定"
+        if len(reason) > 40:
+            reason = reason[:38] + "…"
+        return {"verdict": verdict, "reason": reason}
+
+    raise LLMJudgeError(f"无法解析 JSON 响应：{content[:200]!r}")
+
+
 def judge_image(pil_img: Image.Image, model: str,
                 strength: str = "standard",
                 provider_id: str = "ark",
@@ -868,6 +1008,9 @@ def judge_image(pil_img: Image.Image, model: str,
     extra_kwargs = {}
     if cfg and cfg.get("extra_body"):
         extra_kwargs["extra_body"] = cfg["extra_body"]
+    # 要求模型返回严格 JSON 格式（OpenAI 兼容 API 原生支持）
+    # 不支持该参数的 Provider 会忽略此字段，我们仍有 _parse_llm_response 多层容错兜底
+    extra_kwargs["response_format"] = {"type": "json_object"}
 
     # 占用一个并发槽位——避免一次性打满
     _LIMITER.acquire()
@@ -897,26 +1040,9 @@ def judge_image(pil_img: Image.Image, model: str,
                     # 空内容不直接抛 LLMJudgeError（会跳过重试），
                     # 而是当作可重试的临时错误处理
                     raise RuntimeError(f"{cfg['display_name']} 模型返回空 content")
-                # 容错：模型偶尔会用 markdown 代码块包 JSON
-                if content.startswith("```"):
-                    lines = content.split("\n")
-                    lines = [l for l in lines if not l.startswith("```")]
-                    content = "\n".join(lines).strip()
-                try:
-                    obj = json.loads(content)
-                except json.JSONDecodeError as e:
-                    raise LLMJudgeError(f"无法解析 JSON 响应：{content[:200]!r}") from e
-                verdict = str(obj.get("verdict", "")).lower().strip()
-                reason = str(obj.get("reason", "")).strip()
-                if verdict not in {"pass", "reject"}:
-                    raise LLMJudgeError(f"verdict 非法：{verdict!r}")
-                if not reason:
-                    reason = "表情自然、技术稳" if verdict == "pass" else "AI 判定为废片"
-                # reason 已经在 prompt 里要求 ≤30 字；这里给 40 字硬上限做兜底
-                if len(reason) > 40:
-                    reason = reason[:38] + "…"
+                result = _parse_llm_response(content)
                 _LIMITER.on_success()
-                return {"verdict": verdict, "reason": reason}
+                return result
             except LLMJudgeError:
                 raise
             except Exception as e:

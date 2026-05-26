@@ -54,16 +54,14 @@
           <!-- Provider 选择 -->
           <div class="provider-row">
             <label>提供商</label>
-            <select id="llm-provider" class="select-styled">
-              <option value="ark">火山引擎 Ark</option>
-              <option value="openai">OpenAI</option>
-              <option value="siliconflow">SiliconFlow</option>
-              <option value="deepseek">DeepSeek</option>
-              <option value="custom">自定义</option>
-            </select>
+            <div class="model-input-group">
+              <select id="llm-provider" class="select-styled"></select>
+              <button type="button" class="btn-ghost btn-small" id="btn-add-provider" title="添加自定义 Provider">+</button>
+              <button type="button" class="btn-ghost btn-small btn-danger" id="btn-del-provider" title="删除此 Provider" style="display:none">×</button>
+            </div>
           </div>
 
-          <!-- 自定义 Provider 的 Base URL（仅 custom 时显示）-->
+          <!-- 自定义 Provider 的 Base URL（仅需要 base_url 的 provider 显示）-->
           <div class="provider-row" id="custom-base-url-row" style="display:none">
             <label>Base URL</label>
             <input id="llm-custom-base-url" type="url" placeholder="https://api.example.com/v1" class="input-styled">

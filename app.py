@@ -201,6 +201,30 @@ def _llm_key_file(provider_id: str) -> Path:
     return LLM_KEYS_DIR / provider_id
 
 
+def _llm_base_url_file(provider_id: str) -> Path:
+    """返回任意 provider 的 base_url 存储文件。"""
+    return LLM_KEYS_DIR / f"{provider_id}_base_url"
+
+
+def _load_base_url(provider_id: str) -> str | None:
+    """从文件读取 provider 的 base_url（适用于 custom 及所有用户自定义 provider）。"""
+    bp = _llm_base_url_file(provider_id)
+    return bp.read_text("utf-8").strip() if bp.is_file() else None
+
+
+def _save_base_url(provider_id: str, base_url: str) -> None:
+    """保存 provider 的 base_url 到文件。"""
+    LLM_KEYS_DIR.mkdir(parents=True, exist_ok=True)
+    _llm_base_url_file(provider_id).write_text(base_url.strip(), "utf-8")
+
+
+def _needs_base_url(provider_id: str) -> bool:
+    """判断 provider 是否需要 base_url（custom + 用户自定义）。"""
+    from pic_selecter import llm_judge
+    cfg = llm_judge.PROVIDERS.get(provider_id, {})
+    return provider_id == "custom" or cfg.get("_user_defined")
+
+
 def _mask_key(k: str) -> str:
     """脱敏显示：只露后 4 位。"""
     if not k:
@@ -2040,10 +2064,7 @@ def _require_engine(engine: str) -> None:
         vision.prewarm_tycoon(_tycoon_progress)
         provider_id = JOB.provider_id if JOB else "ark"
         api_key = _load_llm_key(provider_id)
-        base_url = None
-        if provider_id == "custom":
-            bp = LLM_KEYS_DIR / "custom_base_url"
-            base_url = bp.read_text("utf-8").strip() if bp.is_file() else None
+        base_url = _load_base_url(provider_id) if _needs_base_url(provider_id) else None
         llm_judge.require_llm_capabilities(provider_id, api_key=api_key, base_url=base_url, model=JOB.llm_model)
         logger.info(f"[tycoon] 依赖校验通过：DINOv2 / InsightFace + {provider_id} 视觉 LLM 就绪")
     else:
@@ -2109,9 +2130,7 @@ def _run_job(folder: str, dry_run: bool, mode: str, wipe_cache: bool,
                     llm_api_key = os.environ.get(cfg.get("env_key", ""), "").strip() or None
                 except ImportError:
                     pass
-            if provider_id == "custom":
-                bp = LLM_KEYS_DIR / "custom_base_url"
-                llm_base_url = bp.read_text("utf-8").strip() if bp.is_file() else None
+            llm_base_url = _load_base_url(provider_id) if _needs_base_url(provider_id) else None
 
         infos, skipped = grouper.compute_infos(
             folder,
@@ -2267,11 +2286,11 @@ def api_llm_key_set(provider_id: str):
     if not key:
         return jsonify(error="Key 不能为空"), 400
     base_url = None
-    if provider_id == "custom":
+    if _needs_base_url(provider_id):
         # base_url 可从 JSON body 或 query param 传入
         base_url = (data.get("base_url") or request.args.get("base_url") or "").strip() or None
         if not base_url:
-            return jsonify(error="自定义 Provider 需要填写 Base URL"), 400
+            return jsonify(error="Base URL 不能为空"), 400
     # 先临时设 os.environ 测试；通过了再写文件
     cfg = llm_judge.PROVIDERS[provider_id]
     env_key_name = cfg["env_key"]
@@ -2345,25 +2364,73 @@ def api_ark_key_clear_compat():
     return api_llm_key_clear("ark")
 
 
-@app.get("/api/llm_providers")
+@app.route("/api/llm_providers", methods=["GET", "POST"])
 def api_llm_providers():
-    """返回所有 Provider 的元信息。"""
+    """GET: 返回所有 Provider 元信息。POST: 添加用户自定义 Provider。"""
     try:
         from pic_selecter import llm_judge
     except ImportError:
         return jsonify(error="llm_judge 模块不可用"), 500
+
+    if request.method == "POST":
+        data = request.get_json(force=True) or {}
+        provider_id = (data.get("name") or "").strip()
+        display_name = (data.get("display_name") or "").strip()
+        base_url = (data.get("base_url") or "").strip()
+        if not provider_id:
+            return jsonify(error="Provider ID 不能为空"), 400
+        if not base_url:
+            return jsonify(error="Base URL 不能为空"), 400
+        try:
+            llm_judge.register_custom_provider(provider_id, display_name, base_url)
+            return jsonify(ok=True, provider_id=provider_id)
+        except (llm_judge.LLMJudgeError, ValueError) as e:
+            return jsonify(error=str(e)), 400
+        except Exception as e:
+            return jsonify(error=f"{type(e).__name__}: {e}"), 400
+
     info = {}
     for pid, cfg in llm_judge.PROVIDERS.items():
         info[pid] = {
             "display_name": cfg["display_name"],
             "supports_list": cfg["supports_list"],
             "env_key": cfg["env_key"],
+            "_user_defined": cfg.get("_user_defined", False),
+            "base_url": _load_base_url(pid) if _needs_base_url(pid) else cfg.get("base_url", ""),
         }
         saved = _load_llm_key(pid)
         env_key = os.environ.get(cfg["env_key"], "").strip()
         info[pid]["has_key"] = bool(saved or env_key)
         info[pid]["key_source"] = "env" if env_key and not saved else ("file" if saved else None)
     return jsonify(info)
+
+
+@app.route("/api/llm_providers/<provider_id>", methods=["DELETE"])
+def api_llm_providers_delete(provider_id: str):
+    """删除用户自定义 Provider（同时清理其 Key 和 Base URL 文件）。"""
+    try:
+        from pic_selecter import llm_judge
+    except ImportError:
+        return jsonify(error="llm_judge 模块不可用"), 500
+    try:
+        llm_judge.remove_custom_provider(provider_id)
+    except (llm_judge.LLMJudgeError, ValueError) as e:
+        return jsonify(error=str(e)), 400
+    except Exception as e:
+        return jsonify(error=f"{type(e).__name__}: {e}"), 400
+    # 清理 Key 文件
+    try:
+        _clear_llm_key(provider_id)
+    except Exception:
+        pass
+    # 清理 Base URL 文件
+    try:
+        bp = _llm_base_url_file(provider_id)
+        if bp.is_file():
+            bp.unlink()
+    except Exception:
+        pass
+    return jsonify(ok=True)
 
 
 @app.route("/api/llm_models", methods=["GET"])
@@ -2381,10 +2448,7 @@ def api_llm_models():
     if not key:
         return jsonify(error=f"未配置 {cfg['display_name']} API Key（请在天眼模式卡片下方点击设置）",
                         models=[]), 412
-    base_url = None
-    if provider_id == "custom":
-        bp = LLM_KEYS_DIR / "custom_base_url"
-        base_url = bp.read_text("utf-8").strip() if bp.is_file() else None
+    base_url = _load_base_url(provider_id) if _needs_base_url(provider_id) else None
     try:
         models = llm_judge.list_models(provider_id, api_key=key, base_url=base_url)
     except llm_judge.LLMJudgeError as exc:
@@ -2412,12 +2476,9 @@ def api_llm_probe():
     api_key = _load_llm_key(provider_id) or os.environ.get(cfg["env_key"], "").strip()
     if not api_key:
         return jsonify(ok=False, error="未配置 API Key"), 412
-    base_url = None
-    if provider_id == "custom":
-        bp = LLM_KEYS_DIR / "custom_base_url"
-        base_url = bp.read_text("utf-8").strip() if bp.is_file() else None
-        if not base_url:
-            return jsonify(ok=False, error="自定义 Provider 需要填写 Base URL"), 400
+    base_url = _load_base_url(provider_id) if _needs_base_url(provider_id) else None
+    if _needs_base_url(provider_id) and not base_url:
+        return jsonify(ok=False, error="Base URL 不能为空"), 400
     try:
         llm_judge._probe_vision(provider_id, model, api_key=api_key, base_url=base_url)
         return jsonify(ok=True)
@@ -3150,7 +3211,6 @@ def api_winners():
         if g.winner:
             winners_in_group.append(g.winner)
         winners_in_group.extend(g.extra_winners)
-        # 用户从 AI 放手列表里手动保留的照片也算胜者
         winners_in_group.extend(g.manual_restored)
         for w in winners_in_group:
             actual = w
@@ -3166,6 +3226,21 @@ def api_winners():
                 "group_size": len(g.images),
                 "applied": g.applied,
             })
+    # prescreen 恢复的照片也算胜者（不在任何 group 里）
+    for original in SESSION.prescreen_restored:
+        actual = original
+        if not Path(actual).exists():
+            candidate = winners_dir(SESSION.folder) / Path(original).name
+            if candidate.exists():
+                actual = str(candidate)
+        out.append({
+            "path": actual,
+            "name": Path(original).name,
+            "group_index": -1,
+            "group_id": "__prescreen__",
+            "group_size": 1,
+            "applied": False,
+        })
     return jsonify({"winners": out})
 
 
@@ -4006,6 +4081,15 @@ def _winner_paths() -> list[str]:
                     actual = str(cand)
             if Path(actual).exists():
                 paths.append(actual)
+    # prescreen 恢复的照片也算胜者
+    for original in SESSION.prescreen_restored:
+        actual = original
+        if not Path(actual).exists():
+            cand = winners_dir(SESSION.folder) / Path(original).name
+            if cand.exists():
+                actual = str(cand)
+        if Path(actual).exists():
+            paths.append(actual)
     return paths
 
 
