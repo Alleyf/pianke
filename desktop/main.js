@@ -1,4 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
+import { open } from "@tauri-apps/plugin-shell";
+
+window.__piankeShellOpen = open;
 
 const statusEl = document.getElementById("status");
 const detailEl = document.getElementById("detail");

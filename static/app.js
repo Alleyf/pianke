@@ -646,30 +646,31 @@ async function loadLlmModels() {
     } else if (groups.mini.length) {
       select.value = groups.mini[groups.mini.length - 1].id;
     }
-    // 选中后同步到输入框
-    if (select.value) input.value = select.value;
+    // 同步到输入框 + localStorage（代码选中不触发 change，需手动同步）
+    if (select.value) {
+      input.value = select.value;
+      localStorage.setItem("pic_selecter.llm_model", select.value);
+    }
     const pName = llmProviders[provider]?.display_name || "第三方";
     $("llm-hint").textContent = `已就绪。图片会上传至${pName}服务器进行判定。`;
     llmModelsLoaded = true;
-    // 有模型就自动验证
-    if (getLlmModel()) probeModel();
+    updateTycoonLandingSummary();
   } catch (e) {
     select.innerHTML = '<option value="">网络错误</option>';
     $("llm-hint").textContent = `× ${e.message || "拉取失败"}`;
   }
 }
 
-// Model select/input change → persist + auto-probe
+// Model select/input change → persist and update landing summary
 const llmSelect = $("llm-model-select");
 if (llmSelect) {
   llmSelect.addEventListener("change", () => {
     const v = llmSelect.value;
     if (v) {
       localStorage.setItem("pic_selecter.llm_model", v);
-      // 同步到输入框，用户可在此基础上修改
       const inp = $("llm-model-input");
       if (inp) inp.value = v;
-      probeModel();
+      updateTycoonLandingSummary();
     }
   });
 }
@@ -678,9 +679,7 @@ if (llmInput) {
   llmInput.addEventListener("input", () => {
     const v = llmInput.value.trim();
     localStorage.setItem("pic_selecter.llm_model", v);
-  });
-  llmInput.addEventListener("change", () => {
-    if (llmInput.value.trim()) probeModel();
+    updateTycoonLandingSummary();
   });
 }
 
@@ -705,6 +704,7 @@ async function probeModel() {
     if (d.ok) {
       status.textContent = "✓ 可用";
       status.className = "probe-status ok";
+      updateTycoonLandingSummary();
     } else {
       const errMsg = d.error || "不可用";
       status.textContent = "✗ 验证失败";
@@ -1120,7 +1120,10 @@ function drainWall() {
 
 function appendStreamEvent(ev) {
   wallQueue.push(ev);
-  pushTerminalLine(ev);
+  // warming 事件（DINOv2/InsightFace 加载阶段）不写入 terminal log
+  if (!ev.warming) {
+    pushTerminalLine(ev);
+  }
 }
 
 let collectingStarted = false;
@@ -3586,6 +3589,316 @@ $("wm-preview-img").addEventListener("click", () => {
 });
 $("wm-modal").addEventListener("click", (e) => {
   if (e.target.id === "wm-modal") wmClose();
+});
+
+// =================================================================
+// 设置弹窗
+// =================================================================
+const SM = {
+  activeTab: "tycoon",
+
+  init() {
+    // 齿轮按钮
+    $("settings-btn")?.addEventListener("click", () => this.open());
+    $("settings-close")?.addEventListener("click", () => this.close());
+
+    // 点击遮罩关闭
+    $("settings-modal")?.addEventListener("click", (e) => {
+      if (e.target.id === "settings-modal") this.close();
+    });
+
+    // Tab 切换
+    document.querySelectorAll(".settings-tab").forEach(btn => {
+      btn.addEventListener("click", () => {
+        this.switchTab(btn.dataset.tab);
+      });
+    });
+
+    // 着陆页天眼设置入口
+    $("btn-open-tycoon-settings")?.addEventListener("click", () => {
+      this.open("tycoon");
+    });
+  },
+
+  open(tab = "tycoon") {
+    $("settings-modal")?.classList.remove("hidden");
+    lockScroll();
+    this.switchTab(tab);
+  },
+
+  close() {
+    $("settings-modal")?.classList.add("hidden");
+    unlockScroll();
+    // 关闭设置弹窗后，同步更新着陆页天眼配置摘要
+    updateTycoonLandingSummary();
+  },
+
+  switchTab(tab) {
+    this.activeTab = tab;
+    document.querySelectorAll(".settings-tab").forEach(btn => {
+      btn.classList.toggle("active", btn.dataset.tab === tab);
+    });
+    document.querySelectorAll(".settings-panel").forEach(panel => {
+      panel.classList.toggle("active", panel.id === `panel-${tab}`);
+    });
+
+    // 加载对应 Tab 内容
+    if (tab === "tycoon") this.loadTycoonPanel();
+    else if (tab === "logs") this.loadLogsPanel();
+    else if (tab === "updates") this.loadUpdatesPanel();
+    else if (tab === "about") this.loadAboutPanel();
+  },
+
+  async loadTycoonPanel() {
+    await loadLlmProviders();
+    await refreshLlmKeyStatus();
+    await loadLlmModels();
+  },
+
+  async loadLogsPanel() {
+    const container = $("log-list");
+    if (!container) return;
+    const folder = lastSession?.folder || "";
+    if (!folder) {
+      container.innerHTML = `<p class="log-empty">当前无任务上下文，无法查看日志</p>`;
+      return;
+    }
+    try {
+      const r = await fetch(`/api/settings/logs?folder=${encodeURIComponent(folder)}`);
+      const d = await r.json();
+      if (!r.ok) { container.innerHTML = `<p class="log-empty">加载失败</p>`; return; }
+      if (!d.logs?.length) {
+        container.innerHTML = `<p class="log-empty">暂无日志文件</p>`; return;
+      }
+      container.innerHTML = d.logs.map(log => `
+        <div class="log-item">
+          <div class="log-item-label">${log.label}</div>
+          <div class="log-item-size">${formatBytes(log.size)}</div>
+          <div class="path-card-path" title="${log.path}">${log.path}</div>
+          <button class="btn-ghost btn-small" onclick="openPathInExplorer('${log.path.replace(/\\/g, "\\\\")}')">打开</button>
+          <button class="btn-ghost btn-small btn-danger" onclick="SM.clearLog('${log.id}', '${folder.replace(/\\/g, "\\\\")}')">清空</button>
+        </div>
+      `).join("");
+    } catch (e) {
+      container.innerHTML = `<p class="log-empty">加载失败：${e.message}</p>`;
+    }
+  },
+
+  async clearLog(logId, folder) {
+    const ok = await confirmDialog("清空日志？", "此操作不可恢复。");
+    if (!ok) return;
+    try {
+      const r = await fetch("/api/settings/logs", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: logId, folder }),
+      });
+      const d = await r.json();
+      if (!r.ok) { toast.error(d.error || "清空失败"); return; }
+      toast.success("日志已清空");
+      this.loadLogsPanel();
+    } catch (e) { toast.error("清空失败：" + e.message); }
+  },
+
+  async loadUpdatesPanel() {
+    const container = $("update-content");
+    if (!container) return;
+    container.innerHTML = `<p class="log-empty">正在检查更新…</p>`;
+    try {
+      const r = await fetch("/api/check_update");
+      const d = await r.json();
+      if (!r.ok) {
+        container.innerHTML = `<div class="update-status error">检查更新失败：${d.error || "未知错误"}</div>`;
+        return;
+      }
+      const isNew = d.has_update;
+      container.innerHTML = `
+        <div class="update-current">
+          <span class="update-current-label">当前版本</span>
+          <span class="update-current-version">${d.current_version}</span>
+        </div>
+        <div class="update-status ${isNew ? "new" : "ok"}">
+          ${isNew ? `🎉 发现新版本：${d.latest_version}` : "✓ 已是最新版本"}
+        </div>
+        ${isNew && d.release_url ? `<button class="btn btn-primary" onclick="window.open('${d.release_url}', '_blank')">前往下载</button>` : ""}
+        ${d.release_notes ? `<div class="update-notes">${d.release_notes}</div>` : ""}
+      `;
+    } catch (e) {
+      container.innerHTML = `<div class="update-status error">检查更新失败：${e.message}</div>`;
+    }
+  },
+
+  async loadAboutPanel() {
+    const container = $("about-content");
+    if (!container) return;
+    container.innerHTML = `
+      <div class="about-authors">
+        <div class="about-author-card">
+          <div class="about-author-header">
+            <div class="about-author-avatar" style="background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);">
+              <span>W</span>
+            </div>
+            <div class="about-author-info">
+              <h3 class="about-author-name">Waylon Rowe</h3>
+              <p class="about-author-role">主要开发者 · 片刻发起人</p>
+            </div>
+          </div>
+          <p class="about-author-bio">
+            GitHub 活跃贡献者，对机器学习和深度学习有深入研究。
+            项目 Star 486+，Fork 106+。热衷于分享技术知识，推动开源社区发展。
+          </p>
+          <div class="about-author-links">
+            <button class="about-link" onclick="openExternalUrl('https://github.com/zhaoyue4810')">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0 0 24 12c0-6.63-5.37-12-12-12z"/></svg>
+              GitHub
+            </button>
+          </div>
+        </div>
+
+        <div class="about-author-card">
+          <div class="about-author-header">
+            <div class="about-author-avatar" style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);">
+              <span>A</span>
+            </div>
+            <div class="about-author-info">
+              <h3 class="about-author-name">Alleyf</h3>
+              <p class="about-author-role">二开开发者</p>
+            </div>
+          </div>
+          <p class="about-author-bio">
+            来自华中科技大学的全栈工程师，热衷于开发实用工具。座右铭："你知道的越多，你知道的越少。"
+            对 LLM、知识图谱等技术充满兴趣。
+          </p>
+          <div class="about-author-links">
+            <button class="about-link" onclick="openExternalUrl('https://github.com/Alleyf')">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0 0 24 12c0-6.63-5.37-12-12-12z"/></svg>
+              GitHub
+            </button>
+            <button class="about-link" onclick="openExternalUrl('https://alleyf.github.io')">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
+              博客
+            </button>
+          </div>
+        </div>
+      </div>
+      <div class="about-project-info">
+        <h4>关于片刻</h4>
+        <p>片刻是一个本地照片选片工具，帮助你在大量相似照片中快速找到最佳的那一张。</p>
+        <p class="about-project-links">
+          <button class="about-link" onclick="openExternalUrl('https://github.com/Alleyf/pianke')">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0 0 24 12c0-6.63-5.37-12-12-12z"/></svg>
+            项目主页
+          </button>
+          <button class="about-link" onclick="openExternalUrl('https://github.com/Alleyf/pianke/issues')">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+            反馈问题
+          </button>
+        </p>
+      </div>
+    `;
+  },
+};
+
+// 格式化字节数
+function formatBytes(bytes) {
+  if (!bytes) return "0 B";
+  const k = 1024;
+  const sizes = ["B", "KB", "MB", "GB"];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + " " + sizes[i];
+}
+
+// 打开路径（跨平台）
+async function openPathInExplorer(path) {
+  try {
+    const r = await fetch("/api/open_folder", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path }),
+    });
+    const d = await r.json();
+    if (!r.ok) toast.error(d.error || "打开失败");
+  } catch (e) { toast.error("打开失败：" + e.message); }
+}
+
+// 打开外部 URL（跨平台）
+async function openExternalUrl(url) {
+  try {
+    if (window.__piankeShellOpen) {
+      await window.__piankeShellOpen(url);
+    } else {
+      window.open(url, "_blank", "noopener,noreferrer");
+    }
+  } catch (e) {
+    console.error("打开链接失败:", e);
+    window.open(url, "_blank", "noopener,noreferrer");
+  }
+}
+
+// 更新着陆页天眼配置显示
+async function updateTycoonLandingSummary() {
+  const el = $("tycoon-current-config");
+  if (!el) return;
+  const savedProvider = localStorage.getItem("pic_selecter.llm_provider") || "ark";
+  const savedModel = localStorage.getItem("pic_selecter.llm_model") || "";
+  el.textContent = savedModel
+    ? `${savedProvider}: ${savedModel}`
+    : `${savedProvider}（未选择模型）`;
+}
+
+// 修改 syncTycoonPicker：着陆页不展开完整 picker，只显示摘要
+function syncTycoonPicker(engine) {
+  const picker = $("tycoon-model-picker");
+  if (!picker) return;
+  if (engine === "tycoon") {
+    picker.hidden = false;
+    updateTycoonLandingSummary();
+  } else {
+    picker.hidden = true;
+  }
+}
+
+SM.init();
+
+// =========================================================
+// 各视图导航增强：回退按钮
+// =========================================================
+
+// Processing 页：回主页
+$("btn-proc-go-home")?.addEventListener("click", async () => {
+  const ok = await confirmDialog("放弃当前任务？", "已分析的结果会丢失，确定要回到主页吗？");
+  if (!ok) return;
+  try {
+    await fetch("/api/cancel_job", { method: "POST" });
+  } catch {}
+  stopJobPolling();
+  unlockScroll();
+  showView("landing");
+});
+
+// Arena 页：返回预览
+$("btn-arena-back-preview")?.addEventListener("click", async () => {
+  if (!lastSession) return;
+  await enterPreview(lastSession);
+});
+
+// Arena 页：返回初筛（如果有初筛结果的话，否则回预览）
+$("btn-arena-back-prescreen")?.addEventListener("click", async () => {
+  if (!lastSession) return;
+  // 如果有 prescreen_pending 说明还在初筛阶段
+  const s = await fetchJSON("/api/status").catch(() => null);
+  if (s && s.prescreen_pending_count > 0) {
+    await enterPrescreen(s);
+  } else {
+    // 初筛已完成或跳过了，尝试返回预览让用户重新调整分组
+    await enterPreview(lastSession);
+  }
+});
+
+// Done 页：继续选片
+$("btn-done-back-arena")?.addEventListener("click", async () => {
+  if (!lastSession) return;
+  enterArena();
 });
 
 bootstrap();

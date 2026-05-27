@@ -15,6 +15,14 @@
   <span class="status-text" id="status-text">引擎就绪</span>
 </div>
 
+<!-- ============ 左下角设置齿轮 ============ -->
+<button id="settings-btn" class="settings-gear" title="设置" aria-label="打开设置">
+  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+    <path d="M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z" stroke="currentColor" stroke-width="1.8"/>
+    <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+  </svg>
+</button>
+
 <!-- ============ 着陆页 ============ -->
 <section id="view-landing" class="view active">
   <div class="grain"></div>
@@ -51,52 +59,15 @@
           </label>
         </div>
         <div id="tycoon-model-picker" class="tycoon-model-picker" hidden>
-          <!-- Provider 选择 -->
-          <div class="provider-row">
-            <label>提供商</label>
-            <div class="model-input-group">
-              <select id="llm-provider" class="select-styled"></select>
-              <button type="button" class="btn-ghost btn-small" id="btn-add-provider" title="添加自定义 Provider">+</button>
-              <button type="button" class="btn-ghost btn-small btn-danger" id="btn-del-provider" title="删除此 Provider" style="display:none">×</button>
-            </div>
+          <!-- 天眼模式配置入口：点击打开设置弹窗的"天眼模式" Tab -->
+          <div class="tycoon-settings-link" id="tycoon-settings-link">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path d="M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z" stroke="currentColor" stroke-width="1.8"/>
+              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+            <span id="tycoon-current-config">点击配置天眼模式</span>
+            <button type="button" class="btn btn-primary btn-small" id="btn-open-tycoon-settings">设置</button>
           </div>
-
-          <!-- 自定义 Provider 的 Base URL（仅需要 base_url 的 provider 显示）-->
-          <div class="provider-row" id="custom-base-url-row" style="display:none">
-            <label>Base URL</label>
-            <input id="llm-custom-base-url" type="url" placeholder="https://api.example.com/v1" class="input-styled">
-          </div>
-
-          <!-- API Key -->
-          <div class="provider-row">
-            <label>API Key</label>
-            <div class="key-input-group">
-              <span class="key-status" id="llm-key-status"></span>
-              <button type="button" class="btn-ghost btn-small" id="btn-set-llm-key">设置 Key</button>
-            </div>
-          </div>
-          <!-- Key 输入弹层（点击"设置 Key"展开）-->
-          <div class="key-input-panel hidden" id="llm-key-panel">
-            <input id="llm-key-input" type="password" placeholder="粘贴 API Key" class="input-styled">
-            <div class="key-panel-actions">
-              <button type="button" class="btn btn-primary btn-small" id="btn-save-llm-key">保存</button>
-              <button type="button" class="btn-ghost btn-small" id="btn-clear-llm-key">清除</button>
-              <button type="button" class="btn-ghost btn-small" id="btn-cancel-llm-key">取消</button>
-            </div>
-          </div>
-
-          <!-- 模型选择 -->
-          <div class="provider-row">
-            <label>模型</label>
-            <div class="model-input-group">
-              <select id="llm-model-select" class="select-styled"></select>
-              <input id="llm-model-input" type="text" placeholder="输入模型 ID，如 gpt-4o" class="input-styled">
-              <button type="button" class="btn-ghost btn-small" id="btn-probe-model" title="验证模型可用性">验证</button>
-              <span class="probe-status" id="probe-status"></span>
-            </div>
-          </div>
-
-          <!-- 提示 -->
           <p class="hint" id="llm-hint">图片会上传至大模型服务器进行判定</p>
         </div>
         <label class="field-label" for="folder-input">照片文件夹</label>
@@ -266,6 +237,14 @@
         <p class="eyebrow" id="proc-title-eyebrow">分析中</p>
         <h2 class="proc-title-sm" id="proc-title">正在过目每张照片</h2>
         <p class="proc-sub" id="proc-folder"></p>
+      </div>
+      <div class="proc-top-right">
+        <button class="btn-ghost btn-go-home" id="btn-proc-go-home" title="放弃当前任务，回到主页">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <path d="M3 12L12 4L21 12M5 10V20H10V14H14V20H19V10" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+          <span>回主页</span>
+        </button>
       </div>
       <div class="proc-counters proc-counters-inline">
         <div class="proc-stat">
@@ -480,6 +459,20 @@
       <span class="brand-tiny">片刻</span>
       <span class="dot-sep">·</span>
       <span class="arena-folder" id="arena-folder"></span>
+      <div class="arena-back-btns">
+        <button class="btn-ghost btn-nav-back" id="btn-arena-back-preview" title="返回预览">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <path d="M19 12H5M12 5l-7 7 7 7" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+          <span>返回预览</span>
+        </button>
+        <button class="btn-ghost btn-nav-back" id="btn-arena-back-prescreen" title="返回初筛复核">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <path d="M19 12H5M12 5l-7 7 7 7" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+          <span>返回初筛</span>
+        </button>
+      </div>
     </div>
     <div class="arena-h-mid">
       <div class="overall">
@@ -657,6 +650,12 @@
     <div class="done-h-left">
       <span class="brand-mark sm"></span>
       <span class="brand-tiny">片刻</span>
+      <button id="btn-done-back-arena" class="btn-ghost btn-nav-back" title="返回Arena继续选片">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <path d="M19 12H5M12 5l-7 7 7 7" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        <span>继续选片</span>
+      </button>
     </div>
     <div class="done-h-right">
       <button id="btn-open-folder" class="btn-ghost">打开文件夹</button>
@@ -799,6 +798,92 @@
   </div>
 
   </section>
+
+<!-- ============ 设置弹窗 ============ -->
+<div id="settings-modal" class="settings-modal hidden">
+  <div class="settings-modal-card">
+    <header class="settings-modal-head">
+      <div class="settings-modal-title">设置</div>
+      <button class="settings-close" id="settings-close" aria-label="关闭">×</button>
+    </header>
+    <nav class="settings-tabs">
+      <button class="settings-tab active" data-tab="tycoon">天眼模式</button>
+      <button class="settings-tab" data-tab="logs">日志</button>
+      <button class="settings-tab" data-tab="updates">检查更新</button>
+      <button class="settings-tab" data-tab="about">关于作者</button>
+    </nav>
+    <div class="settings-panels">
+
+      <!-- Tab: 天眼模式 -->
+      <div class="settings-panel active" id="panel-tycoon">
+        <div id="tycoon-settings-body">
+          <!-- Provider 选择 -->
+          <div class="provider-row">
+            <label>提供商</label>
+            <div class="model-input-group">
+              <select id="llm-provider" class="select-styled"></select>
+              <button type="button" class="btn-ghost btn-small" id="btn-add-provider" title="添加自定义 Provider">+</button>
+              <button type="button" class="btn-ghost btn-small btn-danger" id="btn-del-provider" title="删除此 Provider" style="display:none">×</button>
+            </div>
+          </div>
+
+          <!-- 自定义 Provider 的 Base URL -->
+          <div class="provider-row" id="custom-base-url-row" style="display:none">
+            <label>Base URL</label>
+            <input id="llm-custom-base-url" type="url" placeholder="https://api.example.com/v1" class="input-styled">
+          </div>
+
+          <!-- API Key -->
+          <div class="provider-row">
+            <label>API Key</label>
+            <div class="key-input-group">
+              <span class="key-status" id="llm-key-status"></span>
+              <button type="button" class="btn-ghost btn-small" id="btn-set-llm-key">设置 Key</button>
+            </div>
+          </div>
+          <!-- Key 输入弹层 -->
+          <div class="key-input-panel hidden" id="llm-key-panel">
+            <input id="llm-key-input" type="password" placeholder="粘贴 API Key" class="input-styled">
+            <div class="key-panel-actions">
+              <button type="button" class="btn btn-primary btn-small" id="btn-save-llm-key">保存</button>
+              <button type="button" class="btn-ghost btn-small" id="btn-clear-llm-key">清除</button>
+              <button type="button" class="btn-ghost btn-small" id="btn-cancel-llm-key">取消</button>
+            </div>
+          </div>
+
+          <!-- 模型选择 -->
+          <div class="provider-row">
+            <label>模型</label>
+            <div class="model-input-group">
+              <select id="llm-model-select" class="select-styled"></select>
+              <input id="llm-model-input" type="text" placeholder="输入模型 ID，如 gpt-4o" class="input-styled">
+              <button type="button" class="btn-ghost btn-small" id="btn-probe-model" title="验证模型可用性">验证</button>
+              <span class="probe-status" id="probe-status"></span>
+            </div>
+          </div>
+
+          <p class="hint" id="llm-hint">图片会上传至大模型服务器进行判定</p>
+        </div>
+      </div>
+
+      <!-- Tab: 日志 -->
+      <div class="settings-panel" id="panel-logs">
+        <div id="log-list"></div>
+      </div>
+
+      <!-- Tab: 检查更新 -->
+      <div class="settings-panel" id="panel-updates">
+        <div id="update-content"></div>
+      </div>
+
+      <!-- Tab: 关于作者 -->
+      <div class="settings-panel" id="panel-about">
+        <div id="about-content"></div>
+      </div>
+
+    </div>
+  </div>
+</div>
 
 <!-- 全局 toast -->
 <div id="toast" class="toast hidden"></div>

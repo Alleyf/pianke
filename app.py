@@ -1787,14 +1787,14 @@ def _job_event(name: str, path: str, info, reason) -> None:
             llm_val = f"{verdict_llm.upper()} · {reason_llm}" if reason_llm else verdict_llm.upper()
         elif q.get("auto_reject"):
             # 没 LLM 判定但已被 auto_reject → 是极速进阶版预审拒掉的，LLM 就没跑
-            llm_val = "初筛不通过，LLM 无需介入"
+            llm_val = "极速预审拒绝"
         else:
             llm_val = "缺失"
         fe = getattr(info, "face_embeddings", None) or []
         face_val = f"脸×{len(fe)}" if fe else "无脸"
         signals = [
             {"kind": "dino", "label": "DINOv2", "value": dino_val},
-            {"kind": "llm", "label": "🤖 LLM", "value": llm_val},
+            {"kind": "llm", "label": "⚡ 预审", "value": llm_val},
             {"kind": "face", "label": "脸", "value": face_val},
         ]
     else:  # expert
@@ -2149,6 +2149,28 @@ def _run_job(folder: str, dry_run: bool, mode: str, wipe_cache: bool,
             raise CancelledError()
         job.skipped = list(skipped)
         _record_skipped(folder, skipped)
+
+        # tycoon 模式：将 LLM 调用失败的图片转为伪 ImageInfo 加入 infos，
+        # 以便在初筛复核阶段展示并让用户决定是否保留。
+        if engine == "tycoon" and skipped:
+            from pic_selecter.grouper import ImageInfo
+            for path, reason in skipped:
+                if reason and ("judge" in reason or "LLM" in reason or "API" in reason or
+                               "timeout" in reason or "HTTP" in reason or
+                               "connect" in reason.lower() or "403" in reason or
+                               "429" in reason or "500" in reason or "502" in reason or
+                               "ollama" in reason.lower() or "provider" in reason.lower()):
+                    pseudo_info = ImageInfo(
+                        path=path,
+                        quality={"auto_reject": True, "reject_reason": f"LLM失败: {reason}"},
+                    )
+                    infos.append(pseudo_info)
+                    # 不再作为 skipped：已转为 rejected 等用户复核
+            # 更新 skipped 为真正的文件级错误
+            job.skipped = [(p, r) for p, r in skipped
+                           if not (r and ("judge" in r or "LLM" in r or "API" in r or
+                                          "timeout" in r or "HTTP" in r or "connect" in r.lower() or
+                                          "ollama" in r.lower()))]
 
         if prescreen_enabled:
             rejected, reasons = _prescreen_rejections(infos)
@@ -3864,6 +3886,88 @@ def api_capabilities():
     return jsonify({"face_aware": face})
 
 
+# ---------------- Settings API ----------------
+
+@app.get("/api/settings/paths")
+def api_settings_paths():
+    """返回各存储路径信息。"""
+    try:
+        import llm_keys_size
+    except ImportError:
+        pass
+
+    paths = []
+    # 配置目录
+    if CONFIG_DIR.exists():
+        size = sum(f.stat().st_size for f in CONFIG_DIR.rglob("*") if f.is_file())
+        paths.append({
+            "id": "config",
+            "label": "配置文件",
+            "path": str(CONFIG_DIR),
+            "size": size,
+        })
+
+    return jsonify({"paths": paths})
+
+
+@app.get("/api/settings/logs")
+def api_settings_logs():
+    """返回日志文件信息（需要 folder 上下文）。"""
+    data = request.args or {}
+    folder = data.get("folder", "")
+    if not folder:
+        return jsonify({"logs": [], "error": "需要 folder 参数"}), 400
+
+    log_path = pic_dir(folder) / "log.txt"
+    job_logs_dir = pic_dir(folder) / "jobs"
+    logs = []
+
+    if log_path.exists():
+        size = log_path.stat().st_size
+        logs.append({
+            "id": "main",
+            "label": "主日志 log.txt",
+            "path": str(log_path.parent),
+            "size": size,
+            "modified": int(log_path.stat().st_mtime),
+        })
+
+    if job_logs_dir.exists():
+        for f in sorted(job_logs_dir.glob("*.log"), key=lambda x: x.stat().st_mtime, reverse=True)[:10]:
+            logs.append({
+                "id": f.stem,
+                "label": f.name,
+                "path": str(job_logs_dir),
+                "size": f.stat().st_size,
+                "modified": int(f.stat().st_mtime),
+            })
+
+    return jsonify({"logs": logs})
+
+
+@app.delete("/api/settings/logs")
+def api_settings_logs_clear():
+    """清空日志文件（需要 folder 上下文）。"""
+    data = request.get_json(force=True) or {}
+    folder = data.get("folder", "")
+    log_id = data.get("id", "main")
+    if not folder:
+        return jsonify({"error": "需要 folder 参数"}), 400
+
+    if log_id == "main":
+        log_path = pic_dir(folder) / "log.txt"
+        if log_path.exists():
+            log_path.write_text("", "utf-8")
+            return jsonify({"ok": True})
+    else:
+        job_log_path = pic_dir(folder) / "jobs" / f"{log_id}.log"
+        if job_log_path.exists():
+            job_log_path.unlink()
+            return jsonify({"ok": True})
+
+    return jsonify({"error": "日志文件不存在"}), 404
+
+
 @app.route("/api/check_update")
 def api_check_update():
     """检查 GitHub 上是否有新版本。"""
@@ -4051,12 +4155,21 @@ def api_peek_folder():
 
 @app.route("/api/open_folder", methods=["POST"])
 def api_open_folder():
-    """跨平台打开 folder 或 _pic_selecter 子目录。"""
+    """跨平台打开 folder 或指定路径。"""
     if SESSION is None:
         return jsonify({"error": "no session"}), 400
     data = request.get_json(silent=True) or {}
+    path = data.get("path")
     sub = data.get("sub")
-    target = pic_dir(SESSION.folder) if sub == "log" else Path(SESSION.folder)
+
+    if path:
+        # 优先使用传入的 path 参数（设置面板的路径打开）
+        target = Path(path)
+    elif sub == "log":
+        target = pic_dir(SESSION.folder)
+    else:
+        target = Path(SESSION.folder)
+
     target = Path(target)
     if not target.exists():
         try:

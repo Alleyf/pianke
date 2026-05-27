@@ -11,7 +11,7 @@
     "beforeBundleCommand": "node scripts/run_python.mjs scripts/build_tauri_sidecar.py"
   },
   "app": {
-    "withGlobalTauri": false,
+    "withGlobalTauri": true,
     "windows": [
       {
         "label": "main",
