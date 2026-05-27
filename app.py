@@ -4566,33 +4566,52 @@ def _run_env_install(job: _EnvInstallJob):
                 cmd += ["-i", "https://pypi.tuna.tsinghua.edu.cn/simple/",
                         "--extra-index-url", "https://pypi.org/simple/"]
 
-        # 逐包安装以提供进度反馈
-        for i, pkg in enumerate(packages_to_install):
-            req = f"{pkg}{_ENV_PKG_REQUIREMENTS.get(pkg, '')}"
-            job.step = f"正在安装 {req}"
-            job.progress = i / total
-            job.log.append(f"pip install {req}")
+        # 一次性安装所有包（避免逐包安装时 insightface 等拉入 opencv-python 覆盖 contrib）
+        all_reqs = [f"{pkg}{_ENV_PKG_REQUIREMENTS.get(pkg, '')}" for pkg in packages_to_install]
+        job.step = f"正在安装 {len(all_reqs)} 个依赖包…"
+        job.progress = 0.1
+        job.log.append(f"pip install {' '.join(all_reqs[:5])}{'...' if len(all_reqs) > 5 else ''}")
 
-            install_cmd = cmd + [req]
-            result = subprocess.run(install_cmd, capture_output=True, text=True, timeout=600)
+        install_cmd = cmd + all_reqs
+        result = subprocess.run(install_cmd, capture_output=True, text=True, timeout=600)
 
-            if result.returncode != 0:
-                job.log.append(f"  ✗ 失败: {result.stderr.strip()[:200]}")
-            else:
-                job.log.append(f"  ✓ 完成")
+        if result.returncode != 0:
+            job.log.append(f"  ✗ 安装失败: {result.stderr.strip()[:500]}")
+        else:
+            # 记录输出中的关键信息
+            for line in result.stdout.strip().split("\n"):
+                if "Successfully" in line or "Requirement already satisfied" in line:
+                    job.log.append(f"  {line.strip()}")
+            job.log.append("  ✓ 依赖安装完成")
 
-        # OpenCV 冲突修复
+        job.progress = 0.9
+
+        # OpenCV 冲突修复（insightface/pyiqa 会偷偷拉 opencv-python）
         job.step = "检查 OpenCV 冲突..."
-        job.progress = 0.95
         conflicts = _check_opencv_conflict()
         if conflicts:
             job.log.append(f"检测到冲突包: {', '.join(conflicts)}，正在修复...")
             for c in conflicts:
                 subprocess.run([py, "-m", "pip", "uninstall", "-y", c],
                                capture_output=True, text=True, timeout=60)
-            fix_cmd = cmd + ["--force-reinstall", "--no-deps", "opencv-contrib-python>=4.9"]
-            subprocess.run(fix_cmd, capture_output=True, text=True, timeout=120)
-            job.log.append("OpenCV 冲突已修复 ✓")
+            # 修复命令需要单独构建
+            if uv_path:
+                fix_cmd = [uv_path, "pip", "install", "--python", py,
+                           "--force-reinstall", "--no-deps", "opencv-contrib-python>=4.9"]
+                if job.use_mirror:
+                    fix_cmd += ["--index-url", "https://pypi.tuna.tsinghua.edu.cn/simple/",
+                                "--extra-index-url", "https://pypi.org/simple/"]
+            else:
+                fix_cmd = [py, "-m", "pip", "install", "--disable-pip-version-check",
+                           "--no-input", "--force-reinstall", "--no-deps", "opencv-contrib-python>=4.9"]
+                if job.use_mirror:
+                    fix_cmd += ["-i", "https://pypi.tuna.tsinghua.edu.cn/simple/",
+                                "--extra-index-url", "https://pypi.org/simple/"]
+            fix_result = subprocess.run(fix_cmd, capture_output=True, text=True, timeout=120)
+            if fix_result.returncode != 0:
+                job.log.append(f"  ⚠ OpenCV 修复失败: {fix_result.stderr.strip()[:200]}")
+            else:
+                job.log.append("OpenCV 冲突已修复 ✓")
 
         job.status = "done"
         job.step = "安装完成"

@@ -3964,6 +3964,11 @@ const SM = {
       `;
     }
 
+    // 判断各模式是否已就绪
+    const coreReady = Object.values(pkgs.core || {}).every(v => v.installed);
+    const expertReady = coreReady && Object.values(pkgs.expert || {}).every(v => v.installed);
+    const tycoonReady = coreReady && Object.values(pkgs.tycoon || {}).every(v => v.installed);
+
     // 安装操作区
     html += `
       <div class="env-section">
@@ -3975,9 +3980,9 @@ const SM = {
           </label>
         </div>
         <div class="env-install-actions">
-          <button class="btn btn-primary btn-small" onclick="SM.installDeps('fast')">极速模式（核心，约 200MB）</button>
-          <button class="btn btn-small" onclick="SM.installDeps('expert')">专家模式（+深度学习，约 2-3GB）</button>
-          <button class="btn btn-small" onclick="SM.installDeps('tycoon')">天眼模式（+LLM，约 5MB）</button>
+          <button class="btn btn-primary btn-small" onclick="SM.installDeps('fast')" ${coreReady ? "disabled" : ""}>${coreReady ? "✓ 极速模式已就绪" : "极速模式（核心，约 200MB）"}</button>
+          <button class="btn btn-small" onclick="SM.installDeps('expert')" ${expertReady ? "disabled" : ""}>${expertReady ? "✓ 专家模式已就绪" : "专家模式（+深度学习，约 2-3GB）"}</button>
+          <button class="btn btn-small" onclick="SM.installDeps('tycoon')" ${tycoonReady ? "disabled" : ""}>${tycoonReady ? "✓ 天眼模式已就绪" : "天眼模式（+LLM，约 5MB）"}</button>
         </div>
         <div id="env-install-progress" class="env-progress-area hidden">
           <div class="env-progress-bar"><div class="env-progress-fill" id="env-progress-fill"></div></div>
