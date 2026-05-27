@@ -3,5 +3,6 @@
   "modes": [
     "fast"
   ],
-  "packages_sig": "Pillow>=10.0|flask>=3.0|imagehash>=4.3|numpy>=1.26|opencv-contrib-python>=4.9|piexif>=1.1.3|pillow-heif>=0.16|pywebview>=5.1|rawpy>=0.18|scipy>=1.11"
+  "packages_sig": "Pillow|flask|imagehash|numpy|opencv-contrib-python|piexif|pillow-heif|pywebview|rawpy|scipy",
+  "last_install": "2026-05-28T01:08:38"
 }

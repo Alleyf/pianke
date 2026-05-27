@@ -329,6 +329,12 @@
       <span class="brand-tiny">片刻 · 初筛复核</span>
     </div>
     <div class="header-actions">
+      <button id="btn-prescreen-back-processing" class="btn-ghost btn-nav-back" title="返回查看分析结果">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <path d="M19 12H5M12 5l-7 7 7 7" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        <span>返回分析</span>
+      </button>
       <button id="btn-prescreen-skip" class="btn-ghost">跳过复核</button>
       <button class="btn-ghost btn-go-home" title="放弃当前任务，回到主页">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
@@ -348,6 +354,7 @@
       <div class="stat"><div class="stat-num" id="ps-rejected">0</div><div class="stat-cap">建议放手</div></div>
       <div class="stat highlight"><div class="stat-num" id="ps-pending">0</div><div class="stat-cap">仍待放手</div></div>
       <div class="stat"><div class="stat-num" id="ps-entering">0</div><div class="stat-cap">已选保留</div></div>
+      <div class="stat stat-timer"><div class="stat-num" id="ps-timer"></div><div class="stat-cap">复核用时</div></div>
     </div>
 
     <!-- 按理由筛选：让用户能一类一类扫，不是逐张 -->
@@ -391,6 +398,12 @@
       <span class="brand-tiny">片刻 · 分组预览</span>
     </div>
     <div class="header-actions">
+      <button id="btn-preview-back-prescreen" class="btn-ghost btn-nav-back" title="返回初筛复核">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <path d="M19 12H5M12 5l-7 7 7 7" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        <span>返回初筛</span>
+      </button>
       <button id="btn-preview-back" class="btn-ghost">回到首页</button>
       <button class="btn-ghost btn-go-home" title="放弃当前任务，回到主页">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
@@ -810,6 +823,7 @@
       <button class="settings-tab active" data-tab="tycoon">天眼模式</button>
       <button class="settings-tab" data-tab="logs">日志</button>
       <button class="settings-tab" data-tab="updates">检查更新</button>
+      <button class="settings-tab" data-tab="env">环境配置</button>
       <button class="settings-tab" data-tab="about">关于作者</button>
     </nav>
     <div class="settings-panels">
@@ -874,6 +888,11 @@
       <!-- Tab: 检查更新 -->
       <div class="settings-panel" id="panel-updates">
         <div id="update-content"></div>
+      </div>
+
+      <!-- Tab: 环境配置 -->
+      <div class="settings-panel" id="panel-env">
+        <div id="env-content"></div>
       </div>
 
       <!-- Tab: 关于作者 -->

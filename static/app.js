@@ -16,6 +16,62 @@ let currentMode = "move";
 let recentWinners = []; // 最近胜出路径，给 arena-stack 用
 let streamSeq = 0;       // streaming log 已渲染到的 event_seq
 
+// ---- 各阶段计时 ----
+let phaseTimers = {};      // { prescreen: startTs, ... }
+let phaseDurations = {};   // { prescreen: seconds, ... }
+let phaseTimerHandle = null;
+
+function startPhaseTimer(phase) {
+  phaseTimers[phase] = performance.now();
+  delete phaseDurations[phase];
+  if (!phaseTimerHandle) {
+    phaseTimerHandle = setInterval(updatePhaseTimerDisplay, 500);
+  }
+  updatePhaseTimerDisplay();
+}
+
+function stopPhaseTimer(phase) {
+  if (phaseTimers[phase]) {
+    phaseDurations[phase] = (performance.now() - phaseTimers[phase]) / 1000;
+    delete phaseTimers[phase];
+    if (!Object.keys(phaseTimers).length && phaseTimerHandle) {
+      clearInterval(phaseTimerHandle);
+      phaseTimerHandle = null;
+    }
+    updatePhaseTimerDisplay();
+  }
+}
+
+function updatePhaseTimerDisplay() {
+  // Processing 页计时（live timer overrides backend elapsed）
+  const elapsedEl = $("proc-elapsed");
+  if (elapsedEl) {
+    if (phaseTimers.processing) {
+      const s = (performance.now() - phaseTimers.processing) / 1000;
+      elapsedEl.textContent = `已用 ${fmtElapsed(s)}`;
+    } else if (phaseDurations.processing) {
+      elapsedEl.textContent = `已用 ${fmtElapsed(phaseDurations.processing)}`;
+    } else {
+      elapsedEl.textContent = "";
+    }
+  }
+  // Prescreen 页计时
+  const psTimerEl = $("ps-timer");
+  if (psTimerEl) {
+    if (phaseTimers.prescreen) {
+      const s = (performance.now() - phaseTimers.prescreen) / 1000;
+      psTimerEl.textContent = fmtElapsed(s);
+      psTimerEl.classList.add("active");
+    } else if (phaseDurations.prescreen) {
+      psTimerEl.textContent = fmtElapsed(phaseDurations.prescreen);
+      psTimerEl.classList.remove("active");
+    } else {
+      psTimerEl.textContent = "";
+      psTimerEl.classList.remove("active");
+    }
+  }
+}
+
 // ---- 处理页照片墙 ----
 let wallCells = [];          // [{el, ev, addedAt}]
 let wallQueue = [];          // 待渲染事件
@@ -196,6 +252,12 @@ function confirmDialog(title, body) {
 // 全局"回主页"按钮：任意页面退出当前流程，清空已选文件夹
 // =================================================================
 async function goHome() {
+  // 清理所有阶段计时器
+  for (const phase of Object.keys(phaseTimers)) stopPhaseTimer(phase);
+  phaseTimers = {};
+  phaseDurations = {};
+  updatePhaseTimerDisplay();
+
   const onLanding = document.body.dataset.view === "landing";
   if (!onLanding) {
     const ok = await confirmDialog(
@@ -926,6 +988,7 @@ $("folder-input").addEventListener("keydown", (e) => {
 // =================================================================
 function enterProcessing(folder) {
   showView("processing");
+  startPhaseTimer("processing");
   $("proc-folder").textContent = folder;
   $("proc-title").textContent = "正在过目每张照片";
   $("proc-error").textContent = "";
@@ -1301,7 +1364,7 @@ async function refreshJob() {
     return;
   }
 
-  $("proc-elapsed").textContent = j.elapsed > 0 ? `已用 ${fmtElapsed(j.elapsed)}` : "";
+  // elapsed 由阶段计时器统一驱动，refreshJob 不再单独写
 
   // ---- warming: 模型加载阶段 ----
   if (j.status === "warming") {
@@ -1591,6 +1654,8 @@ function renderPrescreenGrid() {
 
 async function enterPrescreen(status) {
   showView("prescreen");
+  stopPhaseTimer("processing");
+  startPhaseTimer("prescreen");
   const s = status || (await fetchJSON("/api/status"));
   lastSession = s;
   prescreenFilter = "__all__";
@@ -3646,6 +3711,7 @@ const SM = {
     if (tab === "tycoon") this.loadTycoonPanel();
     else if (tab === "logs") this.loadLogsPanel();
     else if (tab === "updates") this.loadUpdatesPanel();
+    else if (tab === "env") this.loadEnvPanel();
     else if (tab === "about") this.loadAboutPanel();
   },
 
@@ -3797,6 +3863,202 @@ const SM = {
       </div>
     `;
   },
+
+  // ---------- 环境配置 ----------
+  _envPollTimer: null,
+  _envMirror: true,
+
+  async loadEnvPanel() {
+    const container = $("env-content");
+    if (!container) return;
+    container.innerHTML = `<p class="log-empty">正在检测环境…</p>`;
+    try {
+      const d = await fetchJSON("/api/env/check");
+      this._renderEnvPanel(d);
+    } catch (e) {
+      container.innerHTML = `<p class="log-empty">环境检测失败：${e.message}</p>`;
+    }
+  },
+
+  _renderEnvPanel(d) {
+    const container = $("env-content");
+    if (!container) return;
+
+    const py = d.python || {};
+    const pip = d.pip || {};
+    const uv = d.uv || {};
+    const pkgs = d.packages || {};
+    const cvConflict = d.opencv_conflict || [];
+    const inst = d.install_state || {};
+
+    // Python 信息区
+    let html = `
+      <div class="env-section">
+        <h4 class="env-section-title">Python 环境</h4>
+        <div class="env-info-grid">
+          <div class="env-info-item">
+            <span class="env-info-label">Python 版本</span>
+            <span class="env-info-value ${py.version && py.version >= "3.10" ? "env-ok" : "env-warn"}">${py.version || "未检测到"}</span>
+          </div>
+          <div class="env-info-item">
+            <span class="env-info-label">路径</span>
+            <span class="env-info-value env-path" title="${py.path || ""}">${py.path || "-"}</span>
+          </div>
+          <div class="env-info-item">
+            <span class="env-info-label">虚拟环境</span>
+            <span class="env-info-value ${py.in_venv ? "env-ok" : "env-warn"}">${py.in_venv ? "已激活" : "未激活"}</span>
+          </div>
+          ${py.venv_path ? `<div class="env-info-item"><span class="env-info-label">Venv 路径</span><span class="env-info-value env-path" title="${py.venv_path}">${py.venv_path}</span></div>` : ""}
+          <div class="env-info-item">
+            <span class="env-info-label">pip</span>
+            <span class="env-info-value ${pip.version ? "env-ok" : "env-warn"}">${pip.version || "未检测到"}</span>
+          </div>
+          <div class="env-info-item">
+            <span class="env-info-label">uv</span>
+            <span class="env-info-value ${uv.available ? "env-ok" : "env-faint"}">${uv.available ? uv.version : "未安装（可选加速）"}</span>
+          </div>
+        </div>
+      </div>
+    `;
+
+    // 依赖包状态
+    const sections = [
+      { key: "core", label: "核心依赖" },
+      { key: "expert", label: "专家模式依赖" },
+      { key: "tycoon", label: "天眼模式依赖" },
+    ];
+    for (const sec of sections) {
+      const items = pkgs[sec.key] || {};
+      const entries = Object.entries(items);
+      if (!entries.length) continue;
+      const allOk = entries.every(([_, v]) => v.installed);
+      html += `
+        <div class="env-section">
+          <h4 class="env-section-title">
+            ${sec.label}
+            <span class="env-badge ${allOk ? "env-badge-ok" : "env-badge-warn"}">${allOk ? "已就绪" : "待安装"}</span>
+          </h4>
+          <div class="env-pkg-list">
+            ${entries.map(([name, info]) => `
+              <div class="env-pkg-item">
+                <span class="env-pkg-status ${info.installed ? "env-ok" : "env-missing"}">${info.installed ? "✓" : "✗"}</span>
+                <span class="env-pkg-name">${name}</span>
+                <span class="env-pkg-req">${info.required}</span>
+                <span class="env-pkg-ver ${info.installed ? "" : "env-faint"}">${info.version || "-"}</span>
+              </div>
+            `).join("")}
+          </div>
+        </div>
+      `;
+    }
+
+    // OpenCV 冲突警告
+    if (cvConflict.length) {
+      html += `
+        <div class="env-section">
+          <div class="env-conflict-banner">
+            <span>⚠ 检测到冲突的 OpenCV 包：${cvConflict.join("、")}</span>
+            <button class="btn btn-primary btn-small" onclick="SM.fixOpenCV()">修复冲突</button>
+          </div>
+        </div>
+      `;
+    }
+
+    // 安装操作区
+    html += `
+      <div class="env-section">
+        <h4 class="env-section-title">安装依赖</h4>
+        <div class="env-mirror-row">
+          <label class="env-mirror-label">
+            <input type="checkbox" id="env-use-mirror" ${this._envMirror ? "checked" : ""} onchange="SM._envMirror=this.checked">
+            使用清华镜像源（推荐国内用户）
+          </label>
+        </div>
+        <div class="env-install-actions">
+          <button class="btn btn-primary btn-small" onclick="SM.installDeps('fast')">极速模式（核心，约 200MB）</button>
+          <button class="btn btn-small" onclick="SM.installDeps('expert')">专家模式（+深度学习，约 2-3GB）</button>
+          <button class="btn btn-small" onclick="SM.installDeps('tycoon')">天眼模式（+LLM，约 5MB）</button>
+        </div>
+        <div id="env-install-progress" class="env-progress-area hidden">
+          <div class="env-progress-bar"><div class="env-progress-fill" id="env-progress-fill"></div></div>
+          <div class="env-progress-step" id="env-progress-step"></div>
+          <div class="env-progress-log" id="env-progress-log"></div>
+        </div>
+        <p class="env-hint">上次安装模式：${inst.mode && inst.mode.length ? inst.mode.join("、") : "-"} ${inst.last_install ? "（" + inst.last_install + "）" : ""}</p>
+      </div>
+    `;
+
+    container.innerHTML = html;
+  },
+
+  async installDeps(mode) {
+    const progressArea = $("env-install-progress");
+    const fill = $("env-progress-fill");
+    const step = $("env-progress-step");
+    const logEl = $("env-progress-log");
+    if (!progressArea) return;
+
+    progressArea.classList.remove("hidden");
+    if (fill) fill.style.width = "0%";
+    if (step) step.textContent = "启动安装…";
+    if (logEl) logEl.innerHTML = "";
+
+    try {
+      const d = await fetchJSON("/api/env/install", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mode, use_mirror: this._envMirror }),
+      });
+      this._startEnvPoll();
+    } catch (e) {
+      toast.error("启动安装失败：" + e.message);
+    }
+  },
+
+  _startEnvPoll() {
+    if (this._envPollTimer) clearInterval(this._envPollTimer);
+    this._envPollTimer = setInterval(() => this._pollEnvStatus(), 1500);
+  },
+
+  async _pollEnvStatus() {
+    try {
+      const d = await fetchJSON("/api/env/install_status");
+      const fill = $("env-progress-fill");
+      const step = $("env-progress-step");
+      const logEl = $("env-progress-log");
+
+      if (fill) fill.style.width = `${Math.round(d.progress * 100)}%`;
+      if (step) step.textContent = d.step || "";
+      if (logEl && d.log) {
+        logEl.innerHTML = d.log.map(l => `<div class="env-log-line">${l}</div>`).join("");
+        logEl.scrollTop = logEl.scrollHeight;
+      }
+
+      if (!d.running) {
+        clearInterval(this._envPollTimer);
+        this._envPollTimer = null;
+        if (d.status === "error") {
+          toast.error("安装失败：" + (d.error || "未知错误"));
+        } else {
+          toast.success("依赖安装完成");
+          setTimeout(() => this.loadEnvPanel(), 500);
+        }
+      }
+    } catch (e) {
+      clearInterval(this._envPollTimer);
+      this._envPollTimer = null;
+    }
+  },
+
+  async fixOpenCV() {
+    try {
+      const d = await fetchJSON("/api/env/fix_opencv", { method: "POST" });
+      toast.success(d.message || "OpenCV 冲突已修复");
+      this.loadEnvPanel();
+    } catch (e) {
+      toast.error("修复失败：" + e.message);
+    }
+  },
 };
 
 // 格式化字节数
@@ -3899,6 +4161,39 @@ $("btn-arena-back-prescreen")?.addEventListener("click", async () => {
 $("btn-done-back-arena")?.addEventListener("click", async () => {
   if (!lastSession) return;
   enterArena();
+});
+
+// Done 页：返回预览
+$("btn-done-back-preview")?.addEventListener("click", async () => {
+  if (!lastSession) return;
+  await enterPreview(lastSession);
+});
+
+// Done 页：返回初筛
+$("btn-done-back-prescreen")?.addEventListener("click", async () => {
+  if (!lastSession) return;
+  const s = await fetchJSON("/api/status").catch(() => null);
+  if (s && s.prescreen_pending_count > 0) {
+    await enterPrescreen(s);
+  } else {
+    await enterPreview(lastSession);
+  }
+});
+
+// Prescreen 页：返回处理页查看照片墙
+$("btn-prescreen-back-processing")?.addEventListener("click", async () => {
+  showView("processing");
+  // 处理已完成，照片墙保留展示；不再轮询
+});
+
+// Preview 页：返回初筛复核
+$("btn-preview-back-prescreen")?.addEventListener("click", async () => {
+  const s = await fetchJSON("/api/status").catch(() => null);
+  if (s && s.prescreen_pending_count > 0) {
+    await enterPrescreen(s);
+  } else {
+    toast("初筛已确认，无法回退");
+  }
 });
 
 bootstrap();

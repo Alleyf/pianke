@@ -2155,17 +2155,21 @@ def _run_job(folder: str, dry_run: bool, mode: str, wipe_cache: bool,
         if engine == "tycoon" and skipped:
             from pic_selecter.grouper import ImageInfo
             for path, reason in skipped:
-                if reason and ("judge" in reason or "LLM" in reason or "API" in reason or
-                               "timeout" in reason or "HTTP" in reason or
-                               "connect" in reason.lower() or "403" in reason or
-                               "429" in reason or "500" in reason or "502" in reason or
-                               "ollama" in reason.lower() or "provider" in reason.lower()):
-                    pseudo_info = ImageInfo(
-                        path=path,
-                        quality={"auto_reject": True, "reject_reason": f"LLM失败: {reason}"},
-                    )
-                    infos.append(pseudo_info)
-                    # 不再作为 skipped：已转为 rejected 等用户复核
+                try:
+                    if reason and ("judge" in reason or "LLM" in reason or "API" in reason or
+                                   "timeout" in reason or "HTTP" in reason or
+                                   "connect" in reason.lower() or "403" in reason or
+                                   "429" in reason or "500" in reason or "502" in reason or
+                                   "ollama" in reason.lower() or "provider" in reason.lower()):
+                        pseudo_info = ImageInfo(
+                            path=path,
+                            phash="",
+                            quality={"auto_reject": True, "reject_reason": f"LLM失败: {reason}"},
+                        )
+                        infos.append(pseudo_info)
+                        # 不再作为 skipped：已转为 rejected 等用户复核
+                except Exception as e:
+                    logger.warning(f"pseudo ImageInfo 创建失败 ({path}): {e}")
             # 更新 skipped 为真正的文件级错误
             job.skipped = [(p, r) for p, r in skipped
                            if not (r and ("judge" in r or "LLM" in r or "API" in r or
@@ -4466,6 +4470,319 @@ def api_watermark_open_out_dir():
         return jsonify({"ok": True})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+# ---------------- 环境配置 API ----------------
+
+# 依赖分档定义（与 launcher.py 保持一致）
+_ENV_CORE_PKGS = [
+    "Pillow", "pillow-heif", "numpy", "scipy", "flask",
+    "pywebview", "imagehash", "opencv-contrib-python", "rawpy", "piexif",
+]
+_ENV_MODE_PKGS = {
+    "expert": ["torch", "torchvision", "transformers", "insightface",
+               "onnxruntime", "pyiqa", "timm"],
+    "tycoon": ["openai"],
+}
+_ENV_PKG_REQUIREMENTS = {
+    "Pillow": ">=10.0", "pillow-heif": ">=0.16", "numpy": ">=1.26", "scipy": ">=1.11",
+    "flask": ">=3.0", "pywebview": ">=5.1", "imagehash": ">=4.3",
+    "opencv-contrib-python": ">=4.9", "rawpy": ">=0.18", "piexif": ">=1.1.3",
+    "torch": ">=2.2", "torchvision": ">=0.17", "transformers": ">=4.40",
+    "insightface": ">=0.7", "onnxruntime": ">=1.16,<1.22", "pyiqa": ">=0.1.10",
+    "timm": ">=0.9", "openai": ">=1.40",
+}
+
+# 安装任务状态
+_ENV_INSTALL_JOB = None
+
+
+class _EnvInstallJob:
+    def __init__(self, mode: str, use_mirror: bool):
+        self.mode = mode
+        self.use_mirror = use_mirror
+        self.status = "running"
+        self.progress = 0.0
+        self.step = ""
+        self.log: list[str] = []
+        self.error: Optional[str] = None
+        self.started_at = time.time()
+        self.finished_at: Optional[float] = None
+
+
+def _get_installed_packages() -> dict[str, Optional[str]]:
+    """获取当前环境中已安装包的版本。"""
+    try:
+        import importlib.metadata as m
+        result = {}
+        for pkg in _ENV_CORE_PKGS + sum(_ENV_MODE_PKGS.values(), []):
+            try:
+                dist = m.distribution(pkg)
+                result[pkg] = dist.version
+            except m.PackageNotFoundError:
+                result[pkg] = None
+        return result
+    except Exception:
+        return {}
+
+
+def _check_opencv_conflict() -> list[str]:
+    """检查是否有冲突的 OpenCV 包。"""
+    try:
+        import importlib.metadata as m
+        conflicts = []
+        for name in ("opencv-python", "opencv-python-headless"):
+            try:
+                m.distribution(name)
+                conflicts.append(name)
+            except m.PackageNotFoundError:
+                pass
+        return conflicts
+    except Exception:
+        return []
+
+
+def _run_env_install(job: _EnvInstallJob):
+    """后台线程执行依赖安装。"""
+    try:
+        packages_to_install = list(_ENV_CORE_PKGS)
+        if job.mode != "fast":
+            packages_to_install += _ENV_MODE_PKGS.get(job.mode, [])
+
+        total = len(packages_to_install)
+        py = sys.executable
+        uv_path = _find_uv()
+
+        # 构建安装命令
+        if uv_path:
+            cmd = [uv_path, "pip", "install", "--python", py]
+            if job.use_mirror:
+                cmd += ["--index-url", "https://pypi.tuna.tsinghua.edu.cn/simple/",
+                        "--extra-index-url", "https://pypi.org/simple/"]
+        else:
+            cmd = [py, "-m", "pip", "install",
+                   "--disable-pip-version-check", "--no-input"]
+            if job.use_mirror:
+                cmd += ["-i", "https://pypi.tuna.tsinghua.edu.cn/simple/",
+                        "--extra-index-url", "https://pypi.org/simple/"]
+
+        # 逐包安装以提供进度反馈
+        for i, pkg in enumerate(packages_to_install):
+            req = f"{pkg}{_ENV_PKG_REQUIREMENTS.get(pkg, '')}"
+            job.step = f"正在安装 {req}"
+            job.progress = i / total
+            job.log.append(f"pip install {req}")
+
+            install_cmd = cmd + [req]
+            result = subprocess.run(install_cmd, capture_output=True, text=True, timeout=600)
+
+            if result.returncode != 0:
+                job.log.append(f"  ✗ 失败: {result.stderr.strip()[:200]}")
+            else:
+                job.log.append(f"  ✓ 完成")
+
+        # OpenCV 冲突修复
+        job.step = "检查 OpenCV 冲突..."
+        job.progress = 0.95
+        conflicts = _check_opencv_conflict()
+        if conflicts:
+            job.log.append(f"检测到冲突包: {', '.join(conflicts)}，正在修复...")
+            for c in conflicts:
+                subprocess.run([py, "-m", "pip", "uninstall", "-y", c],
+                               capture_output=True, text=True, timeout=60)
+            fix_cmd = cmd + ["--force-reinstall", "--no-deps", "opencv-contrib-python>=4.9"]
+            subprocess.run(fix_cmd, capture_output=True, text=True, timeout=120)
+            job.log.append("OpenCV 冲突已修复 ✓")
+
+        job.status = "done"
+        job.step = "安装完成"
+        job.progress = 1.0
+        job.finished_at = time.time()
+
+        # 更新安装记录
+        install_info_path = Path(__file__).parent / ".pic_selecter_install.json"
+        install_info = {}
+        if install_info_path.exists():
+            try:
+                install_info = json.loads(install_info_path.read_text(encoding="utf-8"))
+            except Exception:
+                pass
+        install_info["modes"] = [job.mode]
+        install_info["packages_sig"] = "|".join(sorted(packages_to_install))
+        install_info["last_install"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+        install_info_path.write_text(json.dumps(install_info, indent=2, ensure_ascii=False), encoding="utf-8")
+
+    except Exception as e:
+        job.status = "error"
+        job.error = str(e)
+        job.finished_at = time.time()
+
+
+def _find_uv() -> Optional[str]:
+    """查找 uv 可执行文件。"""
+    for candidate in ("uv", "uv.exe"):
+        from shutil import which
+        path = which(candidate)
+        if path:
+            return path
+    for path in (str(Path.home() / ".local" / "bin" / ("uv.exe" if sys.platform == "win32" else "uv")),
+                 str(Path.home() / ".cargo" / "bin" / ("uv.exe" if sys.platform == "win32" else "uv"))):
+        if Path(path).exists():
+            return path
+    return None
+
+
+@app.route("/api/env/check")
+def api_env_check():
+    """检查当前 Python 环境和依赖状态。"""
+    try:
+        installed = _get_installed_packages()
+        opencv_conflicts = _check_opencv_conflict()
+
+        # 读取安装记录
+        install_info_path = Path(__file__).parent / ".pic_selecter_install.json"
+        install_state = {}
+        if install_info_path.exists():
+            try:
+                install_state = json.loads(install_info_path.read_text(encoding="utf-8"))
+            except Exception:
+                pass
+
+        # 分档组织包状态
+        packages = {"core": {}, "expert": {}, "tycoon": {}}
+        for pkg in _ENV_CORE_PKGS:
+            ver = installed.get(pkg)
+            packages["core"][pkg] = {
+                "installed": ver is not None,
+                "version": ver,
+                "required": _ENV_PKG_REQUIREMENTS.get(pkg, ""),
+            }
+        for mode, pkgs in _ENV_MODE_PKGS.items():
+            for pkg in pkgs:
+                ver = installed.get(pkg)
+                packages[mode][pkg] = {
+                    "installed": ver is not None,
+                    "version": ver,
+                    "required": _ENV_PKG_REQUIREMENTS.get(pkg, ""),
+                }
+
+        return jsonify({
+            "python": {
+                "version": f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}",
+                "path": sys.executable,
+                "in_venv": hasattr(sys, "real_prefix") or (getattr(sys, "_base_executable", None) is not None and sys.executable != getattr(sys, "_base_executable", sys.executable)),
+                "venv_path": os.environ.get("VIRTUAL_ENV", ""),
+            },
+            "pip": {
+                "version": _get_pip_version(),
+                "path": _get_pip_path(),
+            },
+            "uv": {
+                "available": _find_uv() is not None,
+                "version": _get_uv_version(),
+            },
+            "packages": packages,
+            "opencv_conflict": opencv_conflicts,
+            "install_state": {
+                "mode": install_state.get("modes", []),
+                "last_install": install_state.get("last_install", ""),
+            },
+        })
+    except Exception as e:
+        return jsonify({"error": f"环境检测失败: {e}"}), 500
+
+
+def _get_pip_version() -> Optional[str]:
+    try:
+        result = subprocess.run([sys.executable, "-m", "pip", "--version"],
+                                capture_output=True, text=True, timeout=5)
+        if result.returncode == 0:
+            return result.stdout.strip().split()[1]
+    except Exception:
+        pass
+    return None
+
+
+def _get_pip_path() -> str:
+    try:
+        import pip as _pip
+        return str(Path(_pip.__file__).parent)
+    except Exception:
+        return ""
+
+
+def _get_uv_version() -> Optional[str]:
+    uv = _find_uv()
+    if not uv:
+        return None
+    try:
+        result = subprocess.run([uv, "--version"], capture_output=True, text=True, timeout=5)
+        if result.returncode == 0:
+            return result.stdout.strip().split()[1]
+    except Exception:
+        pass
+    return None
+
+
+@app.route("/api/env/install", methods=["POST"])
+def api_env_install():
+    """启动依赖安装任务。"""
+    global _ENV_INSTALL_JOB
+    if _ENV_INSTALL_JOB and _ENV_INSTALL_JOB.status == "running":
+        return jsonify({"error": "已有安装任务在运行"}), 409
+
+    data = request.get_json(silent=True) or {}
+    mode = data.get("mode", "fast")
+    if mode not in ("fast", "expert", "tycoon"):
+        return jsonify({"error": f"无效模式: {mode}"}), 400
+    use_mirror = data.get("use_mirror", True)
+
+    _ENV_INSTALL_JOB = _EnvInstallJob(mode=mode, use_mirror=use_mirror)
+    threading.Thread(target=_run_env_install, args=(_ENV_INSTALL_JOB,), daemon=True).start()
+    return jsonify({"ok": True, "mode": mode})
+
+
+@app.route("/api/env/install_status")
+def api_env_install_status():
+    """查询安装任务进度。"""
+    if _ENV_INSTALL_JOB is None:
+        return jsonify({"running": False, "status": "idle"})
+    j = _ENV_INSTALL_JOB
+    return jsonify({
+        "running": j.status == "running",
+        "status": j.status,
+        "progress": j.progress,
+        "step": j.step,
+        "log": j.log[-30:],  # 最近30条日志
+        "error": j.error,
+        "elapsed": (j.finished_at or time.time()) - j.started_at,
+    })
+
+
+@app.route("/api/env/fix_opencv", methods=["POST"])
+def api_env_fix_opencv():
+    """修复 OpenCV 冲突。"""
+    conflicts = _check_opencv_conflict()
+    if not conflicts:
+        return jsonify({"ok": True, "message": "无冲突，无需修复"})
+
+    py = sys.executable
+    for c in conflicts:
+        subprocess.run([py, "-m", "pip", "uninstall", "-y", c],
+                       capture_output=True, text=True, timeout=60)
+
+    uv_path = _find_uv()
+    if uv_path:
+        cmd = [uv_path, "pip", "install", "--python", py,
+               "--force-reinstall", "--no-deps", "opencv-contrib-python>=4.9"]
+    else:
+        cmd = [py, "-m", "pip", "install", "--disable-pip-version-check",
+               "--no-input", "--force-reinstall", "--no-deps", "opencv-contrib-python>=4.9"]
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+
+    if result.returncode != 0:
+        return jsonify({"error": f"修复失败: {result.stderr.strip()[:200]}"}), 500
+    return jsonify({"ok": True, "message": f"已移除冲突包 {', '.join(conflicts)}，重装 opencv-contrib-python"})
 
 
 # ---------------- 入口 ----------------
