@@ -101,7 +101,7 @@ class ImageInfo:
     musiq_score: Optional[float] = None     # 0-100 技术质量（pyiqa MUSIQ）
     clipiqa_score: Optional[float] = None   # 0-1 LAION 美学（pyiqa CLIP-IQA+）
     face_embeddings: Optional[list] = None  # [512 维 np.ndarray, ...]，InsightFace ArcFace
-    # ---- 土豪模式（tycoon）专属 ----
+    # ---- 天眼模式（tycoon）专属 ----
     llm_verdict: Optional[str] = None       # "pass" | "reject"
     llm_reason: Optional[str] = None        # 一句中文短理由
     # ---- 极速模式签名（fast_clustering 消费）----
@@ -373,6 +373,9 @@ def _process_one(path: str, strength: str = "standard",
                  face_aware: bool = True,
                  engine: str = "expert",
                  llm_model: Optional[str] = None,
+                 llm_provider_id: str = "ark",
+                 llm_api_key: Optional[str] = None,
+                 llm_base_url: Optional[str] = None,
                  companions: Optional[list[str]] = None,
                  ) -> tuple[Optional[ImageInfo], Optional[str]]:
     """返回 (info, error_reason)。失败时 info=None。
@@ -437,7 +440,7 @@ def _process_one(path: str, strength: str = "standard",
             ), None
 
         if engine == "tycoon":
-            # 土豪模式：DINOv2 + InsightFace 跑分组依赖；初筛交给 LLM
+            # 天眼模式：DINOv2 + InsightFace 跑分组依赖；初筛交给 LLM
             if not llm_model:
                 return None, "tycoon 缺少 llm_model 参数"
             import logging as _logging
@@ -468,6 +471,7 @@ def _process_one(path: str, strength: str = "standard",
                 # strength 路由到 standard / advanced 两套 prompt
                 judgement = llm_judge.judge_image(
                     img_t, model=llm_model, strength=strength,
+                    provider_id=llm_provider_id, api_key=llm_api_key, base_url=llm_base_url,
                 )
                 verdict = judgement["verdict"]
                 reason = judgement["reason"]
@@ -611,6 +615,9 @@ def compute_infos(
     event_cb: Optional[Callable[[str, str, Optional["ImageInfo"], Optional[str]], None]] = None,
     engine: str = "expert",
     llm_model: Optional[str] = None,
+    llm_provider_id: str = "ark",
+    llm_api_key: Optional[str] = None,
+    llm_base_url: Optional[str] = None,
 ) -> tuple[list[ImageInfo], list[tuple[str, str]]]:
     """读取每张图片的 pHash + 时间戳 + EXIF 摘要，加上 engine 对应的额外签名。
 
@@ -688,6 +695,7 @@ def compute_infos(
             futures = {
                 ex.submit(
                     _process_one, f, strength, face_aware, engine, llm_model,
+                    llm_provider_id, llm_api_key, llm_base_url,
                     companions_by_primary.get(f, []),
                 ): f
                 for f in needed

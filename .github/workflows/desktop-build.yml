@@ -101,5 +101,4 @@ jobs:
             artifacts/**/*.exe
             artifacts/**/*.dmg
             artifacts/**/*.deb
-            artifacts/**/*.msi
           draft: false

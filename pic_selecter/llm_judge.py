@@ -1,21 +1,29 @@
-"""火山引擎 Ark 视觉大模型客户端——土豪模式专用。
+"""OpenAI 兼容视觉大模型客户端——天眼模式专用。
 
-Ark 提供 OpenAI 兼容 API，所以这里用 `openai` SDK 直接调，不绑死 volcengine SDK。
+所有主流视觉 LLM（火山引擎 Ark、OpenAI、SiliconFlow、DeepSeek 等）
+都兼容 OpenAI 协议，用 `openai` SDK 直接调即可。
+
+内置 5 个 Provider 配置，也支持用户自定义 base_url。
+Provider 选择由前端 UI 控制，通过 provider_id 参数传入各核心函数。
 
 设计原则：
 - **不静默降级**：缺 API Key、模型不可用、连续重试失败 → 抛 LLMJudgeError，
   由 _run_job 接住把任务置 error，UI 显示明确原因。
 - 工作线程：tycoon 默认起 10 并发；触发限流自动减半，稳定一段时间后回升。
-  最高上限由 ARK_MAX_WORKERS 控制（默认 20，硬上限 32）。
+  最高上限由 LLM_MAX_WORKERS 控制（默认 20，硬上限 32）。
 
-配置（环境变量）：
-  ARK_API_KEY     — 火山引擎 API Key（必填）
-  ARK_BASE_URL    — 默认 https://ark.cn-beijing.volces.com/api/v3
-  ARK_MAX_WORKERS — ThreadPool 上限 + 自适应限速 ceiling，默认 20
-  ARK_INITIAL_CONCURRENCY — 初始并发数，默认 10
-  ARK_TIMEOUT     — 单次请求超时秒，默认 30
+配置（环境变量，按优先级：Provider 专属 > 通用 > Ark 兼容）：
+  LLM_PROVIDER    — 默认 Provider（ark / openai / siliconflow / deepseek / custom），默认 ark
+  ARK_API_KEY     — 火山引擎 API Key（Ark 专用）
+  OPENAI_API_KEY  — OpenAI API Key
+  SILICONFLOW_API_KEY — SiliconFlow API Key
+  DEEPSEEK_API_KEY — DeepSeek API Key
+  CUSTOM_LLM_API_KEY — 自定义 Provider API Key
+  LLM_MAX_WORKERS — ThreadPool 上限，默认 20（Ark 兼容：ARK_MAX_WORKERS）
+  LLM_INITIAL_CONCURRENCY — 初始并发数，默认 10（Ark 兼容：ARK_INITIAL_CONCURRENCY）
+  LLM_TIMEOUT     — 单次请求超时秒，默认 30（Ark 兼容：ARK_TIMEOUT）
 
-模型 ID 不写在环境变量里——由前端从 list_models() 拉取后用户选定，传给 judge_image。
+模型 ID 由前端从 list_models() 拉取后用户选定，或手动输入，传给 judge_image。
 """
 
 from __future__ import annotations
@@ -33,7 +41,129 @@ from PIL import Image
 
 logger = logging.getLogger("pic_selecter")
 
-DEFAULT_BASE_URL = "https://ark.cn-beijing.volces.com/api/v3"
+# ── Provider 注册表 ──────────────────────────────────────────────
+# 内置 Provider（不可删除），运行时与用户自定义合并为 PROVIDERS。
+
+_BUILTIN_PROVIDERS = {
+    "ark": {
+        "display_name": "火山引擎 Ark",
+        "base_url": "https://ark.cn-beijing.volces.com/api/v3",
+        "env_key": "ARK_API_KEY",
+        "supports_list": True,
+        "filter_pattern": "Seed",
+        "extra_body": {"thinking": {"type": "disabled"}},
+    },
+    "openai": {
+        "display_name": "OpenAI",
+        "base_url": "https://api.openai.com/v1",
+        "env_key": "OPENAI_API_KEY",
+        "supports_list": True,
+        "filter_pattern": None,
+        "extra_body": None,
+    },
+    "siliconflow": {
+        "display_name": "SiliconFlow",
+        "base_url": "https://api.siliconflow.cn/v1",
+        "env_key": "SILICONFLOW_API_KEY",
+        "supports_list": True,
+        "filter_pattern": None,
+        "extra_body": None,
+    },
+    "deepseek": {
+        "display_name": "DeepSeek",
+        "base_url": "https://api.deepseek.com/v1",
+        "env_key": "DEEPSEEK_API_KEY",
+        "supports_list": False,
+        "filter_pattern": None,
+        "extra_body": None,
+    },
+    "custom": {
+        "display_name": "自定义",
+        "base_url": "",
+        "env_key": "CUSTOM_LLM_API_KEY",
+        "supports_list": False,
+        "filter_pattern": None,
+        "extra_body": None,
+    },
+}
+
+_CUSTOM_PROVIDERS_FILE = os.path.join(
+    os.path.expanduser("~"), ".config", "pic_selecter", "llm_keys", "custom_providers.json"
+)
+
+
+def _load_custom_providers() -> dict:
+    """从 JSON 文件读取用户自定义 provider。"""
+    if not os.path.isfile(_CUSTOM_PROVIDERS_FILE):
+        return {}
+    try:
+        data = json.loads(open(_CUSTOM_PROVIDERS_FILE, "r", encoding="utf-8").read())
+        if not isinstance(data, dict):
+            return {}
+        return data
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _save_custom_providers(providers: dict) -> None:
+    """将用户自定义 provider 写入 JSON 文件。"""
+    dirpath = os.path.dirname(_CUSTOM_PROVIDERS_FILE)
+    os.makedirs(dirpath, exist_ok=True)
+    with open(_CUSTOM_PROVIDERS_FILE, "w", encoding="utf-8") as f:
+        json.dump(providers, f, ensure_ascii=False, indent=2)
+
+
+def _merge_providers() -> dict:
+    """内置 + 用户自定义合并为完整 PROVIDERS 字典。"""
+    merged = dict(_BUILTIN_PROVIDERS)
+    custom = _load_custom_providers()
+    for pid, cfg in custom.items():
+        merged[pid] = {
+            "display_name": cfg.get("display_name", pid),
+            "base_url": cfg.get("base_url", ""),
+            "env_key": cfg.get("env_key", f"CUSTOM_LLM_{pid.upper()}_API_KEY"),
+            "supports_list": False,
+            "filter_pattern": None,
+            "extra_body": None,
+            "_user_defined": True,
+        }
+    return merged
+
+
+PROVIDERS = _merge_providers()
+
+
+def register_custom_provider(provider_id: str, display_name: str, base_url: str) -> None:
+    """添加用户自定义 Provider。"""
+    import re
+    if provider_id in _BUILTIN_PROVIDERS:
+        raise ValueError(f"Provider ID 与内置冲突: {provider_id}")
+    if not re.match(r"^[a-zA-Z0-9_-]{2,40}$", provider_id):
+        raise ValueError("Provider ID 仅允许字母、数字、连字符、下划线（2-40 字符）")
+    if not base_url.strip():
+        raise ValueError("Base URL 不能为空")
+    custom = _load_custom_providers()
+    custom[provider_id] = {
+        "display_name": display_name.strip() or provider_id,
+        "base_url": base_url.strip(),
+    }
+    _save_custom_providers(custom)
+    # 刷新模块级 PROVIDERS
+    global PROVIDERS
+    PROVIDERS = _merge_providers()
+
+
+def remove_custom_provider(provider_id: str) -> None:
+    """删除用户自定义 Provider。"""
+    if provider_id in _BUILTIN_PROVIDERS:
+        raise ValueError(f"内置 Provider 不可删除: {provider_id}")
+    custom = _load_custom_providers()
+    if provider_id not in custom:
+        raise ValueError(f"Provider 不存在: {provider_id}")
+    del custom[provider_id]
+    _save_custom_providers(custom)
+    global PROVIDERS
+    PROVIDERS = _merge_providers()
 
 # ============================================================
 # Prompt v5：两套档位，标准 / 进阶，由 prescreen_strength 路由
@@ -421,11 +551,11 @@ def _prompt_for(strength: Optional[str]) -> str:
 
 
 class LLMJudgeError(RuntimeError):
-    """土豪模式 LLM 调用失败——配置、模型不可用、解析失败。"""
+    """天眼模式 LLM 调用失败——配置、模型不可用、解析失败。"""
 
 
 class RateLimitError(LLMJudgeError):
-    """触发 Ark 限流——AdaptiveLimiter 据此收缩并发。"""
+    """触发 LLM 限流——AdaptiveLimiter 据此收缩并发。"""
 
 
 _CLIENT_LOCK = threading.Lock()
@@ -501,9 +631,9 @@ class _AdaptiveLimiter:
 
 
 def _build_limiter() -> _AdaptiveLimiter:
-    max_limit = int(os.getenv("ARK_MAX_WORKERS", "20"))
+    max_limit = int(os.environ.get("LLM_MAX_WORKERS", os.environ.get("ARK_MAX_WORKERS", "20")))
     max_limit = max(1, min(max_limit, 32))
-    initial = int(os.getenv("ARK_INITIAL_CONCURRENCY", "10"))
+    initial = int(os.environ.get("LLM_INITIAL_CONCURRENCY", os.environ.get("ARK_INITIAL_CONCURRENCY", "10")))
     initial = max(1, min(initial, max_limit))
     return _AdaptiveLimiter(initial=initial, max_limit=max_limit)
 
@@ -511,24 +641,42 @@ def _build_limiter() -> _AdaptiveLimiter:
 _LIMITER = _build_limiter()
 
 
+def provider_info() -> dict:
+    """返回所有 Provider 的元信息，供前端构建 UI。"""
+    result = {}
+    for pid, cfg in PROVIDERS.items():
+        result[pid] = {
+            "display_name": cfg["display_name"],
+            "base_url": cfg["base_url"],
+            "supports_list": cfg["supports_list"],
+            "env_key": cfg["env_key"],
+        }
+    return result
+
+
 def current_concurrency() -> int:
     """诊断用：当前限速器允许的并发上限。"""
     return _LIMITER.current_limit
 
 
-def _api_key() -> str:
-    key = os.getenv("ARK_API_KEY", "").strip()
-    if not key:
-        raise LLMJudgeError("ARK_API_KEY 未设置，请配置火山引擎 API Key 后重试")
-    return key
+def _api_key(provider_id: str = "ark", explicit_key: str | None = None) -> str:
+    if explicit_key:
+        return explicit_key.strip()
+    cfg = PROVIDERS.get(provider_id)
+    if not cfg:
+        raise LLMJudgeError(f"未知 Provider: {provider_id}")
+    k = os.environ.get(cfg["env_key"], "").strip()
+    if k:
+        return k
+    raise LLMJudgeError(f"请设置 {cfg['env_key']} 环境变量或在页面输入 API Key")
 
 
-def _client():
+def _client(provider_id: str = "ark", *, api_key: str | None = None, base_url: str | None = None):
     global _CLIENT
-    if _CLIENT is not None:
+    if _CLIENT is not None and provider_id == "ark" and api_key is None and base_url is None:
         return _CLIENT
     with _CLIENT_LOCK:
-        if _CLIENT is not None:
+        if _CLIENT is not None and provider_id == "ark" and api_key is None and base_url is None:
             return _CLIENT
         try:
             from openai import OpenAI
@@ -536,11 +684,20 @@ def _client():
             raise LLMJudgeError(
                 f"openai SDK 未安装：{e}。请 pip install openai>=1.40"
             ) from e
-        base_url = os.getenv("ARK_BASE_URL", DEFAULT_BASE_URL).strip() or DEFAULT_BASE_URL
-        timeout = float(os.getenv("ARK_TIMEOUT", "30"))
-        _CLIENT = OpenAI(api_key=_api_key(), base_url=base_url, timeout=timeout)
-        logger.info(f"llm_judge: Ark 客户端初始化，base_url={base_url}")
-    return _CLIENT
+        cfg = PROVIDERS.get(provider_id)
+        if not cfg:
+            raise LLMJudgeError(f"未知 Provider: {provider_id}")
+        url = base_url or cfg["base_url"]
+        if not url:
+            raise LLMJudgeError("自定义 Provider 需要填写 Base URL")
+        key = _api_key(provider_id, api_key)
+        timeout = int(os.environ.get("LLM_TIMEOUT", os.environ.get("ARK_TIMEOUT", "30")))
+        client = OpenAI(api_key=key, base_url=url, timeout=timeout)
+        logger.info(f"llm_judge: {cfg['display_name']} 客户端初始化，base_url={url}")
+        # 缓存默认 ark 客户端以保持向后兼容
+        if provider_id == "ark" and api_key is None and base_url is None:
+            _CLIENT = client
+        return client
 
 
 def _tier_of(model_id: str) -> str:
@@ -555,34 +712,40 @@ def _tier_of(model_id: str) -> str:
     return "other"
 
 
-def list_models() -> list[dict]:
-    """拉取 Ark 上可用的视觉模型，过滤 Seed 系列并按 tier 排序。
+def list_models(provider_id: str = "ark", *, api_key: str | None = None, base_url: str | None = None) -> list[dict]:
+    """尝试拉取指定 Provider 上可用的视觉模型，按 tier 排序。
 
-    返回格式：[{"id", "tier", "label", "context"}]。
-    带 5 分钟进程缓存（避免每次 landing 都打 API）。
+    通过 base_url + /models 端点自动探测。如果 Provider 不支持该端点
+    （如返回 404 / 权限不足），会静默返回空列表，不抛异常。
+
+    返回格式：[{"id", "tier", "label"}]。
+    带 5 分钟进程缓存（仅缓存默认 ark 无参调用，避免每次 landing 都打 API）。
     """
     now = time.time()
-    if _MODELS_CACHE["data"] is not None and (now - _MODELS_CACHE["at"]) < _MODELS_CACHE_TTL:
+    # 只缓存默认 ark 无参调用
+    use_cache = (provider_id == "ark" and api_key is None and base_url is None)
+    if use_cache and _MODELS_CACHE["data"] is not None and (now - _MODELS_CACHE["at"]) < _MODELS_CACHE_TTL:
         return _MODELS_CACHE["data"]
 
+    cfg = PROVIDERS.get(provider_id)
+    if not cfg:
+        raise LLMJudgeError(f"未知 Provider: {provider_id}")
+
     try:
-        client = _client()
+        client = _client(provider_id, api_key=api_key, base_url=base_url)
         resp = client.models.list()
-    except LLMJudgeError:
-        raise
     except Exception as e:
-        raise LLMJudgeError(f"调用 Ark /models 失败：{type(e).__name__}: {e}") from e
+        # /models 端点不可用（404、权限不足、超时等）——静默返回空列表
+        logger.info(f"llm_judge: {cfg['display_name']} /models 不可用（{type(e).__name__}: {e}），跳过")
+        return []
 
     out: list[dict] = []
     for m in getattr(resp, "data", []) or []:
         mid = getattr(m, "id", "") or ""
         if not mid:
             continue
-        # 只保留 Seed 系列视觉模型（doubao-seed-* 或包含 vision 的）
-        low = mid.lower()
-        is_seed = "seed" in low or "doubao" in low
-        is_vision = "vision" in low or "vl" in low or "seed" in low
-        if not (is_seed and is_vision):
+        # 应用 provider 特定的 filter_pattern
+        if cfg.get("filter_pattern") and cfg["filter_pattern"] not in mid:
             continue
         tier = _tier_of(mid)
         out.append({
@@ -596,26 +759,80 @@ def list_models() -> list[dict]:
     out.sort(key=lambda x: (tier_order.get(x["tier"], 9), x["id"]))
 
     if not out:
-        # API 返回不含 Seed 视觉模型——可能账号未开通；给个明确提示
-        logger.warning("llm_judge: /models 未返回 Seed 系列视觉模型——账号可能未开通")
+        logger.warning(f"llm_judge: {cfg['display_name']} /models 未返回可用视觉模型")
 
-    _MODELS_CACHE["at"] = now
-    _MODELS_CACHE["data"] = out
+    if use_cache:
+        _MODELS_CACHE["at"] = now
+        _MODELS_CACHE["data"] = out
     return out
 
 
-def require_llm_capabilities() -> None:
-    """启动期校验：API Key 存在 + 一次 list_models() 成功。"""
-    _api_key()  # 抛 LLMJudgeError 如未设
-    try:
-        models = list_models()
-    except LLMJudgeError:
-        raise
-    except Exception as e:
-        raise LLMJudgeError(f"Ark 连通性校验失败：{type(e).__name__}: {e}") from e
+def require_llm_capabilities(provider_id: str = "ark", *, api_key: str | None = None, base_url: str | None = None, model: str | None = None) -> None:
+    """验证 LLM 能力是否就绪：API Key 可用 + 视觉模型能处理图片。
+
+    - 若指定了 model，直接用 _probe_vision 验证
+    - 否则尝试拉取模型列表并验证第一个可用模型
+    - 若 /models 不可用（返回空），则要求调用方显式指定 model
+    """
+    cfg = PROVIDERS.get(provider_id)
+    if not cfg:
+        raise LLMJudgeError(f"未知 Provider: {provider_id}")
+
+    key = _api_key(provider_id, api_key)
+    if not key:
+        raise LLMJudgeError(f"请先设置 {cfg['display_name']} API Key（{cfg['env_key']}）")
+
+    if model:
+        _probe_vision(provider_id, model, api_key=key, base_url=base_url)
+        return
+
+    models = list_models(provider_id, api_key=key, base_url=base_url)
     if not models:
-        raise LLMJudgeError("Ark 账号无可用的 Seed 系列视觉模型，请检查账号权限")
-    logger.info(f"llm_judge: 校验通过，{len(models)} 个 Seed 视觉模型可用")
+        raise LLMJudgeError(
+            f"{cfg['display_name']} 无法拉取模型列表，请手动指定模型 ID"
+        )
+    _probe_vision(provider_id, models[0]["id"], api_key=key, base_url=base_url)
+
+
+def _image_content_block(provider_id: str, data_url: str) -> dict:
+    """返回图片内容块。目前所有 Provider（OpenAI/火山/DeepSeek/SiliconFlow）
+    均使用 OpenAI 兼容格式 {"type": "image_url", "image_url": {"url": ...}}。
+    """
+    return {"type": "image_url", "image_url": {"url": data_url}}
+
+
+def _probe_vision(provider_id: str, model: str, *, api_key: str | None = None, base_url: str | None = None) -> None:
+    """发送一个 1×1 白色 PNG 给模型，验证能处理图片输入。
+
+    不关心返回内容是否合规——只要不报错就说明模型接受了视觉输入。
+    超时 15 秒（短于正式调用的 30 秒）。
+    """
+    client = _client(provider_id, api_key=api_key, base_url=base_url)
+    cfg = PROVIDERS.get(provider_id, {})
+    _tiny_png = (
+        "data:image/png;base64,"
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVQI12NgAAIABQAB"
+        "NjN9GQAAAABJRUEFTkSuQmCC"
+    )
+    extra_kwargs = {}
+    if cfg and cfg.get("extra_body"):
+        extra_kwargs["extra_body"] = cfg["extra_body"]
+    try:
+        client.chat.completions.create(
+            model=model,
+            messages=[{
+                "role": "user",
+                "content": [
+                    _image_content_block(provider_id, _tiny_png),
+                    {"type": "text", "text": "这张图是什么颜色？一个字回答。"},
+                ],
+            }],
+            max_tokens=16,
+            timeout=15,
+            **extra_kwargs,
+        )
+    except Exception:
+        raise
 
 
 def _image_to_data_url(
@@ -690,11 +907,77 @@ def _is_rate_limit_exc(exc: BaseException) -> bool:
     ))
 
 
+def _parse_llm_response(content: str) -> dict:
+    """多层容错解析 LLM 响应，返回 {"verdict": "pass"|"reject", "reason": str}。
+
+    三层策略：
+    1. 提取 JSON（strip markdown 代码块 → json.loads）
+    2. 正则兜底：从文本中搜索 {"verdict":...} 片段
+    3. 关键词兜底：从自然语言中推断 verdict + reason
+    """
+    # --- Layer 1: 清理 markdown 代码块后直接解析 ---
+    stripped = content
+    if stripped.startswith("```"):
+        lines = stripped.split("\n")
+        lines = [l for l in lines if not l.startswith("```")]
+        stripped = "\n".join(lines).strip()
+
+    try:
+        obj = json.loads(stripped)
+        verdict = str(obj.get("verdict", "")).lower().strip()
+        reason = str(obj.get("reason", "")).strip()
+        if verdict in {"pass", "reject"} and reason:
+            if len(reason) > 40:
+                reason = reason[:38] + "…"
+            return {"verdict": verdict, "reason": reason}
+    except (json.JSONDecodeError, ValueError):
+        pass
+
+    # --- Layer 2: 正则搜索 JSON 片段 ---
+    import re
+    m = re.search(r'\{[^{}]*"verdict"\s*:\s*"([^"]+)"[^{}]*"reason"\s*:\s*"([^"]*)"[^{}]*\}', content, re.IGNORECASE)
+    if m:
+        verdict = m.group(1).lower().strip()
+        reason = m.group(2).strip()
+        if verdict in {"pass", "reject"}:
+            if not reason:
+                reason = "AI 判定"
+            if len(reason) > 40:
+                reason = reason[:38] + "…"
+            return {"verdict": verdict, "reason": reason}
+
+    # --- Layer 3: 关键词推断 ---
+    lower = content.lower()
+    # 先尝试找到 verdict 相关的关键词
+    verdict = None
+    if any(kw in lower for kw in ("reject", "拒绝", "废片", "放手", "不合格", "不通过")):
+        verdict = "reject"
+    elif any(kw in lower for kw in ("pass", "通过", "保留", "合格", "留下", "不错")):
+        verdict = "pass"
+
+    if verdict:
+        # 尝试提取 reason（找 verdict 关键词后面的简短描述）
+        reason_m = re.search(r'"reason"\s*:\s*"([^"]*)"', content, re.IGNORECASE)
+        if reason_m and reason_m.group(1).strip():
+            reason = reason_m.group(1).strip()
+        else:
+            reason = "AI 判定"
+        if len(reason) > 40:
+            reason = reason[:38] + "…"
+        return {"verdict": verdict, "reason": reason}
+
+    raise LLMJudgeError(f"无法解析 JSON 响应：{content[:200]!r}")
+
+
 def judge_image(pil_img: Image.Image, model: str,
-                strength: str = "standard") -> dict:
+                strength: str = "standard",
+                provider_id: str = "ark",
+                api_key: str | None = None,
+                base_url: str | None = None) -> dict:
     """对单张图调 LLM 拿初筛判定。
 
     strength: "standard"（默认，温和）/ "advanced"（严苛）→ 路由到不同 prompt。
+    provider_id: 使用的 Provider，默认 "ark"（向后兼容）。
 
     成功返回 {"verdict": "pass"|"reject", "reason": str}。
     任何失败（网络、5xx、429 重试耗尽、JSON 解析失败、verdict 非法）→ 抛 LLMJudgeError。
@@ -706,7 +989,8 @@ def judge_image(pil_img: Image.Image, model: str,
     if not model:
         raise LLMJudgeError("judge_image: 必须传入 model（从 list_models() 选）")
 
-    client = _client()
+    client = _client(provider_id, api_key=api_key, base_url=base_url)
+    cfg = PROVIDERS.get(provider_id)
     data_url, img_bytes, img_size = _image_to_data_url(pil_img)
     prompt_text = _prompt_for(strength)
 
@@ -714,13 +998,21 @@ def judge_image(pil_img: Image.Image, model: str,
         {
             "role": "user",
             "content": [
-                {"type": "image_url", "image_url": {"url": data_url}},
+                _image_content_block(provider_id, data_url),
                 {"type": "text", "text": prompt_text},
             ],
         }
     ]
 
-    # 占用一个并发槽位——避免一次性打满 Ark
+    # 构建额外参数（如 Ark 的 thinking: disabled）
+    extra_kwargs = {}
+    if cfg and cfg.get("extra_body"):
+        extra_kwargs["extra_body"] = cfg["extra_body"]
+    # 要求模型返回严格 JSON 格式（OpenAI 兼容 API 原生支持）
+    # 不支持该参数的 Provider 会忽略此字段，我们仍有 _parse_llm_response 多层容错兜底
+    extra_kwargs["response_format"] = {"type": "json_object"}
+
+    # 占用一个并发槽位——避免一次性打满
     _LIMITER.acquire()
     try:
         last_err: Optional[Exception] = None
@@ -734,38 +1026,23 @@ def judge_image(pil_img: Image.Image, model: str,
                     messages=messages,
                     temperature=0.0,
                     max_tokens=384,
-                    # 关闭 doubao-seed-1.6 系列的 thinking 模式——质检场景不需要思考链，
-                    # 开了单张要 10s+，关了 2-4s
-                    extra_body={"thinking": {"type": "disabled"}},
+                    **extra_kwargs,
                 )
                 elapsed = time.time() - t0
                 logger.info(
                     f"llm_judge: {model} {img_size[0]}x{img_size[1]} "
                     f"{img_bytes/1024:.0f}KB → {elapsed:.1f}s"
                 )
+                if not resp.choices:
+                    raise RuntimeError(f"{cfg['display_name']} 模型返回空 choices")
                 content = (resp.choices[0].message.content or "").strip()
                 if not content:
-                    raise LLMJudgeError("Ark 返回空 content")
-                # 容错：模型偶尔会用 markdown 代码块包 JSON
-                if content.startswith("```"):
-                    lines = content.split("\n")
-                    lines = [l for l in lines if not l.startswith("```")]
-                    content = "\n".join(lines).strip()
-                try:
-                    obj = json.loads(content)
-                except json.JSONDecodeError as e:
-                    raise LLMJudgeError(f"无法解析 JSON 响应：{content[:200]!r}") from e
-                verdict = str(obj.get("verdict", "")).lower().strip()
-                reason = str(obj.get("reason", "")).strip()
-                if verdict not in {"pass", "reject"}:
-                    raise LLMJudgeError(f"verdict 非法：{verdict!r}")
-                if not reason:
-                    reason = "表情自然、技术稳" if verdict == "pass" else "AI 判定为废片"
-                # reason 已经在 prompt 里要求 ≤30 字；这里给 40 字硬上限做兜底
-                if len(reason) > 40:
-                    reason = reason[:38] + "…"
+                    # 空内容不直接抛 LLMJudgeError（会跳过重试），
+                    # 而是当作可重试的临时错误处理
+                    raise RuntimeError(f"{cfg['display_name']} 模型返回空 content")
+                result = _parse_llm_response(content)
                 _LIMITER.on_success()
-                return {"verdict": verdict, "reason": reason}
+                return result
             except LLMJudgeError:
                 raise
             except Exception as e:
@@ -778,21 +1055,21 @@ def judge_image(pil_img: Image.Image, model: str,
                 if attempt < len(backoffs):
                     wait = backoff * (2.0 if is_rate else 1.0)
                     logger.warning(
-                        f"llm_judge: Ark {'限流' if is_rate else '调用失败'}"
+                        f"llm_judge: {'限流' if is_rate else '调用失败'}"
                         f"（尝试 {attempt}/{len(backoffs)}）：{etype}: {e}，{wait:.1f}s 后重试"
                     )
                     time.sleep(wait)
                 else:
                     logger.error(
-                        f"llm_judge: Ark 调用 {len(backoffs)} 次均失败：{etype}: {e}"
+                        f"llm_judge: 调用 {len(backoffs)} 次均失败：{etype}: {e}"
                     )
 
         if last_err is not None and _is_rate_limit_exc(last_err):
             raise RateLimitError(
-                f"Ark 限流重试 {len(backoffs)} 次仍失败：{last_err}"
+                f"限流重试 {len(backoffs)} 次仍失败：{last_err}"
             )
         raise LLMJudgeError(
-            f"Ark 调用重试 {len(backoffs)} 次仍失败："
+            f"调用重试 {len(backoffs)} 次仍失败："
             f"{type(last_err).__name__}: {last_err}"
         )
     finally:

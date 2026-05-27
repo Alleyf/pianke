@@ -116,7 +116,7 @@ def build_sidecar() -> Path:
         "cv2",
         "--collect-data",
         "cv2",
-        # 专家/土豪模式依赖
+        # 专家/天眼模式依赖
         # torch/torchvision/transformers 等巨型包用 hidden-import，
         # 同时排除不需要的大型子模块避免 PyInstaller 扫描器崩溃
         "--hidden-import",
@@ -143,10 +143,12 @@ def build_sidecar() -> Path:
         "transformers.models",
         "--hidden-import",
         "transformers.models.auto",
-        "--collect-submodules",
+        "--hidden-import",
         "insightface",
-        "--collect-submodules",
+        "--hidden-import",
         "onnxruntime",
+        "--hidden-import",
+        "onnxruntime.capi",
         "--hidden-import",
         "pyiqa",
         "--hidden-import",

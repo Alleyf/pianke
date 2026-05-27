@@ -133,7 +133,7 @@ class JobState:
     dry_run: bool
     mode: str = "copy"
     engine: str = "fast"
-    status: str = "pending"  # pending | scanning | hashing | grouping | done | error | cancelled
+    status: str = "pending"  # pending | warming | scanning | hashing | grouping | done | error | cancelled
     done: int = 0
     total: int = 0
     label: str = ""
@@ -148,8 +148,10 @@ class JobState:
     prescreen_enabled: bool = True
     prescreen_strength: str = "standard"
     face_aware: bool = True
-    # 土豪模式：用户选定的 Ark 模型 ID
+    # 天眼模式：用户选定的 LLM 模型 ID
     llm_model: Optional[str] = None
+    # 天眼模式：Provider ID（ark / openai / siliconflow / deepseek / custom）
+    provider_id: str = "ark"
     # 流式事件——每过一张图后端追加一条，前端 streaming log 用
     recent_events: list[dict] = field(default_factory=list)
     event_seq: int = 0
@@ -184,12 +186,43 @@ def state_path(folder: str) -> Path:
 logger = logging.getLogger("pic_selecter")
 
 
-# ---------------- 火山引擎 API Key 持久化 ----------------
+# ---------------- LLM Provider API Key 持久化 ----------------
 #
 # 限制：Python 子进程没法回写父 shell 的环境变量（OS 决定的）。
 # 折中方案：UI 录入 → 写本地配置文件 + 立即设到 os.environ → 当前进程生效；
 # 下次启动从文件读回设到 os.environ。等价于"网页录入持久化环境变量"。
-ARK_KEY_FILE = Path.home() / ".config" / "pic_selecter" / "ark_key"
+# 支持多个 Provider，每个有自己的 key 文件。
+
+CONFIG_DIR = Path.home() / ".config" / "pic_selecter"
+LLM_KEYS_DIR = CONFIG_DIR / "llm_keys"
+
+
+def _llm_key_file(provider_id: str) -> Path:
+    return LLM_KEYS_DIR / provider_id
+
+
+def _llm_base_url_file(provider_id: str) -> Path:
+    """返回任意 provider 的 base_url 存储文件。"""
+    return LLM_KEYS_DIR / f"{provider_id}_base_url"
+
+
+def _load_base_url(provider_id: str) -> str | None:
+    """从文件读取 provider 的 base_url（适用于 custom 及所有用户自定义 provider）。"""
+    bp = _llm_base_url_file(provider_id)
+    return bp.read_text("utf-8").strip() if bp.is_file() else None
+
+
+def _save_base_url(provider_id: str, base_url: str) -> None:
+    """保存 provider 的 base_url 到文件。"""
+    LLM_KEYS_DIR.mkdir(parents=True, exist_ok=True)
+    _llm_base_url_file(provider_id).write_text(base_url.strip(), "utf-8")
+
+
+def _needs_base_url(provider_id: str) -> bool:
+    """判断 provider 是否需要 base_url（custom + 用户自定义）。"""
+    from pic_selecter import llm_judge
+    cfg = llm_judge.PROVIDERS.get(provider_id, {})
+    return provider_id == "custom" or cfg.get("_user_defined")
 
 
 def _mask_key(k: str) -> str:
@@ -201,33 +234,59 @@ def _mask_key(k: str) -> str:
     return "*" * (len(k) - 4) + k[-4:]
 
 
-def _load_ark_key_from_file() -> None:
-    """启动时调；如果环境变量没设但文件存在，把文件里的 key 设到 os.environ。
-    顺序：env var 优先（用户显式 export 的不动），其次文件。"""
-    if os.environ.get("ARK_API_KEY"):
-        return
-    try:
-        if ARK_KEY_FILE.exists():
-            key = ARK_KEY_FILE.read_text(encoding="utf-8").strip()
-            if key:
-                os.environ["ARK_API_KEY"] = key
-                logger.info(f"已从 {ARK_KEY_FILE} 载入 ARK_API_KEY")
-    except OSError as e:
-        logger.warning(f"读取 ARK key 文件失败: {e}")
+def _load_llm_key(provider_id: str) -> str | None:
+    """从文件读指定 Provider 的 key；文件不存在或空 → None。"""
+    p = _llm_key_file(provider_id)
+    if p.is_file():
+        return p.read_text("utf-8").strip() or None
+    return None
 
 
-def _save_ark_key_to_file(key: str) -> None:
-    """写到 ~/.config/pic_selecter/ark_key，0600 权限。"""
-    ARK_KEY_FILE.parent.mkdir(parents=True, exist_ok=True)
-    ARK_KEY_FILE.write_text(key, encoding="utf-8")
+def _save_llm_key(provider_id: str, key: str) -> None:
+    """写到 llm_keys/<provider_id>，0600 权限。"""
+    LLM_KEYS_DIR.mkdir(parents=True, exist_ok=True)
+    _llm_key_file(provider_id).write_text(key.strip(), "utf-8")
     try:
-        os.chmod(ARK_KEY_FILE, 0o600)
+        os.chmod(_llm_key_file(provider_id), 0o600)
     except OSError:
         pass  # Windows 没 chmod，不致命
 
 
-# 启动期：从文件载入 key（env var 优先）
-_load_ark_key_from_file()
+def _clear_llm_key(provider_id: str) -> None:
+    """删除指定 Provider 的 key 文件。"""
+    p = _llm_key_file(provider_id)
+    if p.is_file():
+        p.unlink()
+
+
+def _migrate_ark_key():
+    """One-time migration: move old ark_key file to llm_keys/ark."""
+    old = CONFIG_DIR / "ark_key"
+    if old.is_file() and not _llm_key_file("ark").is_file():
+        _save_llm_key("ark", old.read_text("utf-8").strip())
+        old.unlink()
+
+
+def _load_all_llm_keys_to_env() -> None:
+    """启动时调；对每个已存 key 文件的 Provider，把 key 设到对应 os.environ。
+    顺序：env var 优先（用户显式 export 的不动），其次文件。"""
+    try:
+        from pic_selecter import llm_judge
+    except ImportError:
+        return
+    for pid, cfg in llm_judge.PROVIDERS.items():
+        env_key_name = cfg["env_key"]
+        if os.environ.get(env_key_name):
+            continue  # env var 优先
+        saved = _load_llm_key(pid)
+        if saved:
+            os.environ[env_key_name] = saved
+            logger.info(f"已从 {_llm_key_file(pid)} 载入 {env_key_name}")
+
+
+# 启动期：迁移旧 ark_key → 从文件载入所有 Provider key（env var 优先）
+_migrate_ark_key()
+_load_all_llm_keys_to_env()
 
 
 def setup_logger(folder: Optional[str]) -> None:
@@ -417,6 +476,12 @@ def _close_job_log() -> None:
             except Exception:
                 pass
             JOB_LOG = None
+
+
+def _log_event(kind: str, msg: str) -> None:
+    """便捷函数：向 per-job 日志写入事件（如果日志已开启）。"""
+    if JOB_LOG is not None:
+        JOB_LOG.event(kind, msg)
 
 
 # ---------------- State 持久化 + 迁移 ----------------
@@ -1951,16 +2016,57 @@ def _require_engine(engine: str) -> None:
             raise RuntimeError(f"[expert] 缺少 cv2：{e}") from e
         from pic_selecter import vision
         vision.require_expert_capabilities()  # imports 检查
-        vision.prewarm_all()                  # 真正加载模型权重；失败 raise
+
+        def _expert_progress(step: str, done: int, total: int):
+            if JOB is None:
+                return
+            JOB.status = "warming"
+            JOB.label = step
+            JOB.done = done
+            JOB.total = total
+            JOB.event_seq += 1
+            JOB.recent_events.append({
+                "seq": JOB.event_seq,
+                "warming": True,
+                "step": step,
+                "done": done,
+                "total": total,
+            })
+            if len(JOB.recent_events) > 60:
+                JOB.recent_events = JOB.recent_events[-60:]
+
+        vision.prewarm_all(_expert_progress)  # 真正加载模型权重；失败 raise
         logger.info("[expert] 依赖校验通过：DINOv2 / NIMA / MUSIQ / CLIP-IQA+ / InsightFace 全部就绪")
     elif engine == "tycoon":
-        # 土豪模式：分组依赖 DINOv2 + InsightFace；初筛靠 LLM
+        # 天眼模式：分组依赖 DINOv2 + InsightFace；初筛靠 LLM
         from pic_selecter import vision
         from pic_selecter import llm_judge
         vision.require_tycoon_capabilities()
-        vision.prewarm_tycoon()
-        llm_judge.require_llm_capabilities()  # ARK_API_KEY + list_models() 联通
-        logger.info("[tycoon] 依赖校验通过：DINOv2 / InsightFace + Ark 视觉 LLM 就绪")
+
+        def _tycoon_progress(step: str, done: int, total: int):
+            if JOB is None:
+                return
+            JOB.status = "warming"
+            JOB.label = step
+            JOB.done = done
+            JOB.total = total
+            JOB.event_seq += 1
+            JOB.recent_events.append({
+                "seq": JOB.event_seq,
+                "warming": True,
+                "step": step,
+                "done": done,
+                "total": total,
+            })
+            if len(JOB.recent_events) > 60:
+                JOB.recent_events = JOB.recent_events[-60:]
+
+        vision.prewarm_tycoon(_tycoon_progress)
+        provider_id = JOB.provider_id if JOB else "ark"
+        api_key = _load_llm_key(provider_id)
+        base_url = _load_base_url(provider_id) if _needs_base_url(provider_id) else None
+        llm_judge.require_llm_capabilities(provider_id, api_key=api_key, base_url=base_url, model=JOB.llm_model)
+        logger.info(f"[tycoon] 依赖校验通过：DINOv2 / InsightFace + {provider_id} 视觉 LLM 就绪")
     else:
         raise ValueError(f"未知 engine: {engine!r}")
 
@@ -1969,7 +2075,8 @@ def _run_job(folder: str, dry_run: bool, mode: str, wipe_cache: bool,
              threshold_near: int, threshold_far: int, near_seconds: int,
              prescreen_enabled: bool, prescreen_strength: str,
              face_aware: bool = True, engine: str = "fast",
-             llm_model: Optional[str] = None) -> None:
+             llm_model: Optional[str] = None,
+             provider_id: str = "ark") -> None:
     global SESSION, LAST_INFOS
     job = JOB
     assert job is not None
@@ -1988,6 +2095,7 @@ def _run_job(folder: str, dry_run: bool, mode: str, wipe_cache: bool,
             prescreen=f"{prescreen_enabled}/{prescreen_strength}",
             face_aware=face_aware,
             llm_model=llm_model or "(none)",
+            provider_id=provider_id,
             threshold_near=threshold_near,
             threshold_far=threshold_far,
             near_seconds=near_seconds,
@@ -2007,9 +2115,23 @@ def _run_job(folder: str, dry_run: bool, mode: str, wipe_cache: bool,
         if engine == "fast":
             job.label = "扫描与计算指纹（pHash + dHash + wHash + aHash + HSV + ORB）..."
         elif engine == "tycoon":
-            job.label = f"扫描 + DINOv2 + InsightFace + LLM 初筛（模型: {llm_model}）..."
+            job.label = f"扫描 + DINOv2 + InsightFace + LLM 初筛（{provider_id}: {llm_model}）..."
         else:
             job.label = "扫描与计算 pHash + DINOv2 + NIMA/MUSIQ/CLIP + 人脸嵌入..."
+        # Resolve provider API key and base_url for tycoon mode
+        llm_api_key = None
+        llm_base_url = None
+        if engine == "tycoon":
+            llm_api_key = _load_llm_key(provider_id)
+            if not llm_api_key:
+                try:
+                    from pic_selecter import llm_judge
+                    cfg = llm_judge.PROVIDERS.get(provider_id, {})
+                    llm_api_key = os.environ.get(cfg.get("env_key", ""), "").strip() or None
+                except ImportError:
+                    pass
+            llm_base_url = _load_base_url(provider_id) if _needs_base_url(provider_id) else None
+
         infos, skipped = grouper.compute_infos(
             folder,
             progress=_job_progress,
@@ -2019,6 +2141,9 @@ def _run_job(folder: str, dry_run: bool, mode: str, wipe_cache: bool,
             event_cb=_job_event,
             engine=engine,
             llm_model=llm_model,
+            llm_provider_id=provider_id,
+            llm_api_key=llm_api_key,
+            llm_base_url=llm_base_url,
         )
         if _cancel_check():
             raise CancelledError()
@@ -2129,95 +2254,238 @@ def index():
     return send_from_directory(app.static_folder, "index.html")
 
 
-@app.route("/api/ark_key", methods=["GET"])
-def api_ark_key_status():
-    """返回 Ark API Key 当前状态——给 UI 决定显示"已配置/未配置"。"""
-    key = os.environ.get("ARK_API_KEY", "")
-    if not key:
-        return jsonify({"configured": False, "source": None, "masked": None})
-    # source: env 表示来自用户 export；file 表示我们存的；优先级 env > file
-    source = "file" if ARK_KEY_FILE.exists() and ARK_KEY_FILE.read_text(encoding="utf-8").strip() == key else "env"
-    return jsonify({
-        "configured": True,
-        "source": source,
-        "masked": _mask_key(key),
-    })
+@app.get("/api/llm_key/<provider_id>")
+def api_llm_key_status(provider_id: str):
+    """查询指定 Provider 的 API Key 状态。"""
+    try:
+        from pic_selecter import llm_judge
+    except ImportError:
+        return jsonify(error="llm_judge 模块不可用"), 500
+    if provider_id not in llm_judge.PROVIDERS:
+        return jsonify(error=f"未知 Provider: {provider_id}"), 400
+    saved = _load_llm_key(provider_id)
+    cfg = llm_judge.PROVIDERS[provider_id]
+    env_key = os.environ.get(cfg["env_key"], "").strip()
+    has_key = bool(saved or env_key)
+    source = "env" if env_key and not saved else ("file" if saved else None)
+    key = saved or env_key
+    return jsonify(has_key=has_key, source=source, masked=_mask_key(key) if key else None)
 
 
-@app.route("/api/ark_key", methods=["POST"])
-def api_ark_key_set():
-    """前端录入 API Key：写到本地配置文件 + 设到 os.environ + 测试连通性。
-    失败（包括 Ark 拒绝认证）→ 返回错误，不保存到文件。"""
+@app.post("/api/llm_key/<provider_id>")
+def api_llm_key_set(provider_id: str):
+    """保存指定 Provider 的 API Key，并验证可用性。"""
+    try:
+        from pic_selecter import llm_judge
+    except ImportError:
+        return jsonify(error="llm_judge 模块不可用"), 500
+    if provider_id not in llm_judge.PROVIDERS:
+        return jsonify(error=f"未知 Provider: {provider_id}"), 400
     data = request.get_json(force=True) or {}
     key = (data.get("key") or "").strip()
     if not key:
-        return jsonify({"error": "key 不能为空"}), 400
-    # 先临时设 os.environ 测试一下；通过了再写文件
-    prev = os.environ.get("ARK_API_KEY")
-    os.environ["ARK_API_KEY"] = key
+        return jsonify(error="Key 不能为空"), 400
+    base_url = None
+    if _needs_base_url(provider_id):
+        # base_url 可从 JSON body 或 query param 传入
+        base_url = (data.get("base_url") or request.args.get("base_url") or "").strip() or None
+        if not base_url:
+            return jsonify(error="Base URL 不能为空"), 400
+    # 先临时设 os.environ 测试；通过了再写文件
+    cfg = llm_judge.PROVIDERS[provider_id]
+    env_key_name = cfg["env_key"]
+    prev = os.environ.get(env_key_name)
+    os.environ[env_key_name] = key
     try:
-        from pic_selecter import llm_judge
         # 强制重新建客户端（旧的可能是用空 key 创的）
         llm_judge._CLIENT = None
         llm_judge._MODELS_CACHE = {"at": 0.0, "data": None}
-        models = llm_judge.list_models()
+        # Validate: try list_models first; if empty (provider doesn't support /models), just verify client
+        models = llm_judge.list_models(provider_id, api_key=key, base_url=base_url)
         if not models:
-            raise RuntimeError("Ark 账号无可用的 Seed 系列视觉模型，请到火山引擎控制台开通后重试")
+            # /models not available — just verify the client can be created
+            llm_judge._client(provider_id, api_key=key, base_url=base_url)
     except Exception as e:
         # 回滚
         if prev is None:
-            os.environ.pop("ARK_API_KEY", None)
+            os.environ.pop(env_key_name, None)
         else:
-            os.environ["ARK_API_KEY"] = prev
+            os.environ[env_key_name] = prev
         try:
-            from pic_selecter import llm_judge
             llm_judge._CLIENT = None
         except Exception:
             pass
-        return jsonify({"error": f"验证失败：{type(e).__name__}: {e}"}), 400
+        return jsonify(error=f"验证失败：{type(e).__name__}: {e}"), 400
     # 通过 → 写文件
     try:
-        _save_ark_key_to_file(key)
+        _save_llm_key(provider_id, key)
     except OSError as e:
-        return jsonify({"error": f"key 已生效但持久化失败：{e}", "masked": _mask_key(key)}), 200
-    logger.info(f"Ark API Key 已更新，{len(models)} 个 Seed 模型可用")
-    return jsonify({
-        "ok": True,
-        "masked": _mask_key(key),
-        "model_count": len(models),
-    })
+        return jsonify(error=f"key 已生效但持久化失败：{e}", masked=_mask_key(key)), 200
+    # Also save custom base_url if provided
+    if base_url:
+        LLM_KEYS_DIR.mkdir(parents=True, exist_ok=True)
+        (LLM_KEYS_DIR / f"{provider_id}_base_url").write_text(base_url, "utf-8")
+    model_count = len(models) if models else 0
+    logger.info(f"{cfg['display_name']} API Key 已更新，{model_count} 个模型可用")
+    return jsonify(ok=True, masked=_mask_key(key), model_count=model_count)
 
 
-@app.route("/api/ark_key", methods=["DELETE"])
-def api_ark_key_clear():
-    """清除 API Key：删本地文件 + 从 os.environ 移除。"""
-    os.environ.pop("ARK_API_KEY", None)
-    try:
-        if ARK_KEY_FILE.exists():
-            ARK_KEY_FILE.unlink()
-    except OSError as e:
-        return jsonify({"error": f"删除 key 文件失败: {e}"}), 500
+@app.delete("/api/llm_key/<provider_id>")
+def api_llm_key_clear(provider_id: str):
+    """删除指定 Provider 的 API Key。"""
     try:
         from pic_selecter import llm_judge
+    except ImportError:
+        return jsonify(error="llm_judge 模块不可用"), 500
+    if provider_id not in llm_judge.PROVIDERS:
+        return jsonify(error=f"未知 Provider: {provider_id}"), 400
+    cfg = llm_judge.PROVIDERS[provider_id]
+    os.environ.pop(cfg["env_key"], None)
+    _clear_llm_key(provider_id)
+    try:
         llm_judge._CLIENT = None
         llm_judge._MODELS_CACHE = {"at": 0.0, "data": None}
     except Exception:
         pass
-    return jsonify({"ok": True})
+    return jsonify(ok=True)
+
+
+# ── 旧接口兼容（/api/ark_key → /api/llm_key/ark）──────
+@app.get("/api/ark_key")
+def api_ark_key_status_compat():
+    return api_llm_key_status("ark")
+
+@app.post("/api/ark_key")
+def api_ark_key_set_compat():
+    return api_llm_key_set("ark")
+
+@app.delete("/api/ark_key")
+def api_ark_key_clear_compat():
+    return api_llm_key_clear("ark")
+
+
+@app.route("/api/llm_providers", methods=["GET", "POST"])
+def api_llm_providers():
+    """GET: 返回所有 Provider 元信息。POST: 添加用户自定义 Provider。"""
+    try:
+        from pic_selecter import llm_judge
+    except ImportError:
+        return jsonify(error="llm_judge 模块不可用"), 500
+
+    if request.method == "POST":
+        data = request.get_json(force=True) or {}
+        provider_id = (data.get("name") or "").strip()
+        display_name = (data.get("display_name") or "").strip()
+        base_url = (data.get("base_url") or "").strip()
+        if not provider_id:
+            return jsonify(error="Provider ID 不能为空"), 400
+        if not base_url:
+            return jsonify(error="Base URL 不能为空"), 400
+        try:
+            llm_judge.register_custom_provider(provider_id, display_name, base_url)
+            return jsonify(ok=True, provider_id=provider_id)
+        except (llm_judge.LLMJudgeError, ValueError) as e:
+            return jsonify(error=str(e)), 400
+        except Exception as e:
+            return jsonify(error=f"{type(e).__name__}: {e}"), 400
+
+    info = {}
+    for pid, cfg in llm_judge.PROVIDERS.items():
+        info[pid] = {
+            "display_name": cfg["display_name"],
+            "supports_list": cfg["supports_list"],
+            "env_key": cfg["env_key"],
+            "_user_defined": cfg.get("_user_defined", False),
+            "base_url": _load_base_url(pid) if _needs_base_url(pid) else cfg.get("base_url", ""),
+        }
+        saved = _load_llm_key(pid)
+        env_key = os.environ.get(cfg["env_key"], "").strip()
+        info[pid]["has_key"] = bool(saved or env_key)
+        info[pid]["key_source"] = "env" if env_key and not saved else ("file" if saved else None)
+    return jsonify(info)
+
+
+@app.route("/api/llm_providers/<provider_id>", methods=["DELETE"])
+def api_llm_providers_delete(provider_id: str):
+    """删除用户自定义 Provider（同时清理其 Key 和 Base URL 文件）。"""
+    try:
+        from pic_selecter import llm_judge
+    except ImportError:
+        return jsonify(error="llm_judge 模块不可用"), 500
+    try:
+        llm_judge.remove_custom_provider(provider_id)
+    except (llm_judge.LLMJudgeError, ValueError) as e:
+        return jsonify(error=str(e)), 400
+    except Exception as e:
+        return jsonify(error=f"{type(e).__name__}: {e}"), 400
+    # 清理 Key 文件
+    try:
+        _clear_llm_key(provider_id)
+    except Exception:
+        pass
+    # 清理 Base URL 文件
+    try:
+        bp = _llm_base_url_file(provider_id)
+        if bp.is_file():
+            bp.unlink()
+    except Exception:
+        pass
+    return jsonify(ok=True)
 
 
 @app.route("/api/llm_models", methods=["GET"])
 def api_llm_models():
-    """土豪模式：列出 Ark 上可用的 Seed 系列视觉模型，供前端 select。"""
-    if not os.getenv("ARK_API_KEY"):
-        return jsonify({"error": "未配置 ARK API Key（请在土豪模式卡片下方点击设置）",
-                        "models": []}), 412
+    """天眼模式：列出指定 Provider 上可用的视觉模型，供前端 select。"""
     try:
         from pic_selecter import llm_judge
-        models = llm_judge.list_models()
+    except ImportError:
+        return jsonify(error="llm_judge 模块不可用", models=[]), 500
+    provider_id = request.args.get("provider", "ark")
+    if provider_id not in llm_judge.PROVIDERS:
+        return jsonify(error=f"未知 Provider: {provider_id}", models=[]), 400
+    cfg = llm_judge.PROVIDERS[provider_id]
+    key = _load_llm_key(provider_id) or os.environ.get(cfg["env_key"], "").strip()
+    if not key:
+        return jsonify(error=f"未配置 {cfg['display_name']} API Key（请在天眼模式卡片下方点击设置）",
+                        models=[]), 412
+    base_url = _load_base_url(provider_id) if _needs_base_url(provider_id) else None
+    try:
+        models = llm_judge.list_models(provider_id, api_key=key, base_url=base_url)
+    except llm_judge.LLMJudgeError as exc:
+        return jsonify(error=str(exc), models=[]), 502
     except Exception as e:
-        return jsonify({"error": str(e), "models": []}), 502
-    return jsonify({"models": models})
+        return jsonify(error=str(e), models=[]), 502
+    return jsonify(models=models)
+
+
+@app.route("/api/llm_probe", methods=["POST"])
+def api_llm_probe():
+    """验证指定 Provider + 模型是否能处理视觉输入（1×1 测试图）。"""
+    try:
+        from pic_selecter import llm_judge
+    except ImportError:
+        return jsonify(ok=False, error="llm_judge 模块不可用"), 500
+    data = request.get_json(silent=True) or {}
+    provider_id = data.get("provider", "ark")
+    model = (data.get("model") or "").strip()
+    if not model:
+        return jsonify(ok=False, error="未指定模型"), 400
+    if provider_id not in llm_judge.PROVIDERS:
+        return jsonify(ok=False, error=f"未知 Provider: {provider_id}"), 400
+    cfg = llm_judge.PROVIDERS[provider_id]
+    api_key = _load_llm_key(provider_id) or os.environ.get(cfg["env_key"], "").strip()
+    if not api_key:
+        return jsonify(ok=False, error="未配置 API Key"), 412
+    base_url = _load_base_url(provider_id) if _needs_base_url(provider_id) else None
+    if _needs_base_url(provider_id) and not base_url:
+        return jsonify(ok=False, error="Base URL 不能为空"), 400
+    try:
+        llm_judge._probe_vision(provider_id, model, api_key=api_key, base_url=base_url)
+        return jsonify(ok=True)
+    except llm_judge.LLMJudgeError as exc:
+        return jsonify(ok=False, error=str(exc)), 502
+    except Exception as e:
+        return jsonify(ok=False, error=f"{type(e).__name__}: {e}"), 502
 
 
 @app.route("/api/job_log", methods=["GET"])
@@ -2256,6 +2524,71 @@ def api_job_log():
     })
 
 
+@app.route("/api/export_log", methods=["GET"])
+def api_export_log():
+    """导出完整运行日志：合并主日志 log.txt + 最新 per-job 日志 + 会话元信息。"""
+    if SESSION is None:
+        return jsonify({"error": "no session"}), 400
+    folder = SESSION.folder
+    parts = []
+
+    # 会话元信息
+    parts.append("=" * 78)
+    parts.append("片刻 (Pianke) 运行日志导出")
+    parts.append(f"导出时间: {time.strftime('%Y-%m-%d %H:%M:%S')}")
+    parts.append(f"文件夹: {folder}")
+    parts.append(f"引擎: {SESSION.engine}")
+    parts.append(f"模式: {SESSION.mode}")
+    parts.append(f"试运行: {SESSION.dry_run}")
+    parts.append(f"初筛: {SESSION.prescreen_enabled}/{SESSION.prescreen_strength}")
+    parts.append(f"分组数: {len(SESSION.groups)}")
+    parts.append(f"阈值: near={SESSION.threshold_near} far={SESSION.threshold_far} seconds={SESSION.near_seconds}")
+    parts.append("=" * 78)
+    parts.append("")
+
+    # 主日志
+    main_log = pic_dir(folder) / "log.txt"
+    if main_log.exists():
+        parts.append("# --- 主日志 (log.txt) ---")
+        try:
+            parts.append(main_log.read_text(encoding="utf-8"))
+        except OSError:
+            parts.append("(读取主日志失败)")
+        parts.append("")
+
+    # 最新 per-job 日志
+    jobs_dir = pic_dir(folder) / "jobs"
+    if jobs_dir.exists():
+        files = sorted(jobs_dir.glob("*.log"), key=lambda p: p.stat().st_mtime, reverse=True)
+        for f in files[:5]:
+            parts.append(f"# --- 任务日志 ({f.name}) ---")
+            try:
+                parts.append(f.read_text(encoding="utf-8"))
+            except OSError:
+                parts.append("(读取任务日志失败)")
+            parts.append("")
+
+    # 无法读取的文件
+    skipped_file = pic_dir(folder) / "skipped.log"
+    if skipped_file.exists():
+        parts.append("# --- 无法读取的照片 ---")
+        try:
+            parts.append(skipped_file.read_text(encoding="utf-8"))
+        except OSError:
+            pass
+
+    content = "\n".join(parts)
+    from urllib.parse import quote
+    safe_name = quote(folder.split(os.sep)[-1], safe='')
+    filename = f"pianke-log-{time.strftime('%Y%m%d-%H%M%S')}-{safe_name}.txt"
+    resp = Response(content, mimetype="text/plain; charset=utf-8")
+    resp.headers["Content-Disposition"] = (
+        f'attachment; filename="log.txt"; '
+        f"filename*=UTF-8''{quote(filename)}"
+    )
+    return resp
+
+
 @app.route("/api/llm_concurrency", methods=["GET"])
 def api_llm_concurrency():
     """诊断：返回当前自适应限速器允许的并发数。
@@ -2281,6 +2614,7 @@ def api_start():
     if engine not in ("fast", "expert", "tycoon"):
         engine = "fast"
     llm_model = (data.get("llm_model") or "").strip() or None
+    provider_id = (data.get("provider_id") or "").strip() or "ark"
     threshold_near = int(data.get("threshold_near", THRESHOLD_NEAR))
     threshold_far = int(data.get("threshold_far", THRESHOLD_FAR))
     near_seconds = int(data.get("near_seconds", NEAR_SECONDS))
@@ -2300,7 +2634,7 @@ def api_start():
     if not Path(folder).is_dir():
         return jsonify({"error": f"目录不存在: {folder}"}), 400
     if engine == "tycoon" and not llm_model:
-        return jsonify({"error": "土豪模式需要选择 LLM 模型"}), 400
+        return jsonify({"error": "天眼模式需要选择 LLM 模型"}), 400
 
     with LOCK:
         if JOB and JOB.status in ("pending", "scanning", "hashing", "grouping"):
@@ -2316,6 +2650,7 @@ def api_start():
             prescreen_strength=prescreen_strength,
             face_aware=face_aware,
             llm_model=llm_model,
+            provider_id=provider_id,
         )
         SESSION = None
 
@@ -2324,7 +2659,7 @@ def api_start():
         args=(folder, dry_run, mode, wipe_cache,
               threshold_near, threshold_far, near_seconds,
               prescreen_enabled, prescreen_strength, face_aware, engine,
-              llm_model),
+              llm_model, provider_id),
         daemon=True,
     )
     t.start()
@@ -2391,6 +2726,8 @@ def api_job():
         "engine": JOB.engine,
         "prescreen_enabled": JOB.prescreen_enabled,
         "prescreen_strength": JOB.prescreen_strength,
+        "llm_model": JOB.llm_model,
+        "provider_id": JOB.provider_id,
         "done": JOB.done,
         "total": JOB.total,
         "label": JOB.label,
@@ -2642,12 +2979,12 @@ def api_choose():
             return jsonify({"done": True})
         _push_undo_locked()
         g = SESSION.groups[SESSION.current_group]
-        # 在 advance 之前记下 left/right（advance 后会改）
         left_before = g.left
         right_before = g.right
         advance(g, side)
         _record_preference(left_before, right_before, side)
         _finalize_group_locked()
+    _log_event("CHOOSE", f"group={SESSION.current_group} loser={side}")
     return api_group()
 
 
@@ -2669,6 +3006,7 @@ def api_kick():
             SESSION.undo_stack.pop()
             return jsonify({"error": "no image on side"}), 400
         _finalize_group_locked()
+    _log_event("KICK", f"group={SESSION.current_group} side={side}")
     return api_group()
 
 
@@ -2686,6 +3024,7 @@ def api_undo():
         snap = last["snapshot"]
         SESSION.groups[SESSION.current_group] = _group_from_dict(snap)
         save_state(SESSION)
+    _log_event("UNDO", f"group={SESSION.current_group}")
     return jsonify({"undone": True, **_payload_group()})
 
 
@@ -2710,6 +3049,7 @@ def api_skip_group():
             SESSION.groups.append(g)
         SESSION.undo_stack = []
         save_state(SESSION)
+    _log_event("SKIP", f"group={SESSION.current_group}")
     return api_group()
 
 
@@ -2731,13 +3071,13 @@ def api_reopen_group():
         if not g.finished:
             return jsonify({"error": "该组还没决定，无需反悔"}), 400
         result = reopen_group(g, SESSION.folder, SESSION.mode, SESSION)
-        # 跳到这组重新挑；undo_stack 整体作废（snapshot 引用的是旧状态）
         SESSION.current_group = idx
         SESSION.undo_stack = []
         save_state(SESSION)
         if result["failed"]:
             for f in result["failed"]:
                 logger.warning(f"reopen 还原失败 {f['path']}: {f['reason']}")
+    _log_event("REOPEN", f"group_id={gid}")
     payload = api_group().get_json()
     payload["reopened"] = True
     payload["failed"] = result["failed"]
@@ -2871,6 +3211,7 @@ def api_winners():
         if g.winner:
             winners_in_group.append(g.winner)
         winners_in_group.extend(g.extra_winners)
+        winners_in_group.extend(g.manual_restored)
         for w in winners_in_group:
             actual = w
             if not Path(actual).exists():
@@ -2885,6 +3226,21 @@ def api_winners():
                 "group_size": len(g.images),
                 "applied": g.applied,
             })
+    # prescreen 恢复的照片也算胜者（不在任何 group 里）
+    for original in SESSION.prescreen_restored:
+        actual = original
+        if not Path(actual).exists():
+            candidate = winners_dir(SESSION.folder) / Path(original).name
+            if candidate.exists():
+                actual = str(candidate)
+        out.append({
+            "path": actual,
+            "name": Path(original).name,
+            "group_index": -1,
+            "group_id": "__prescreen__",
+            "group_size": 1,
+            "applied": False,
+        })
     return jsonify({"winners": out})
 
 
@@ -2978,7 +3334,26 @@ def api_restore_rejected():
         if gid == "__prescreen__" and original_pre:
             if original_pre not in SESSION.prescreen_restored:
                 SESSION.prescreen_restored.append(original_pre)
+                # Move file from losers/ to winners/
+                if not SESSION.dry_run:
+                    source = Path(raw_path)
+                    if not source.exists():
+                        candidate = losers_dir(SESSION.folder) / Path(original_pre).name
+                        if candidate.exists():
+                            source = candidate
+                    if source.exists():
+                        win_d = winners_dir(SESSION.folder)
+                        win_d.mkdir(exist_ok=True)
+                        target = _unique_target(win_d, Path(original_pre).name)
+                        try:
+                            if SESSION.mode == "move":
+                                shutil.move(str(source), str(target))
+                            else:
+                                shutil.copy2(str(source), str(target))
+                        except OSError as e:
+                            logger.warning(f"prescreen restore move failed: {e}")
                 save_state(SESSION)
+            _log_event("RESTORE", f"prescreen: {original_pre}")
             return jsonify({"ok": True, "restored": True})
 
         _, group, original = _find_auto_rejected(gid, raw_path)
@@ -3086,7 +3461,134 @@ def api_restore_rejected():
         if SESSION.mode == "move" and actual in SESSION.meta:
             SESSION.meta[winner_path] = SESSION.meta.pop(actual)
         save_state(SESSION)
+    _log_event("RESTORE", f"group={gid} original={original}")
     return jsonify({"ok": True, "restored": True})
+
+
+@app.route("/api/unrestore_rejected", methods=["POST"])
+def api_unrestore_rejected():
+    """取消保留：把已 restore 的照片重新归入放手列表。"""
+    if SESSION is None:
+        return jsonify({"error": "no session"}), 400
+    data = request.get_json(force=True) or {}
+    gid = data.get("group_id") or ""
+    raw_path = data.get("path") or data.get("original_path") or ""
+    if not gid or not raw_path:
+        return jsonify({"error": "缺少 group_id 或 path"}), 400
+
+    with LOCK:
+        # ---- prescreen 路径 ----
+        original_pre = _find_prescreen_rejected(raw_path)
+        if gid == "__prescreen__" and original_pre:
+            if original_pre in SESSION.prescreen_restored:
+                SESSION.prescreen_restored.remove(original_pre)
+                # Move file from winners/ back to losers/
+                if not SESSION.dry_run:
+                    source = Path(raw_path)
+                    if not source.exists():
+                        candidate = winners_dir(SESSION.folder) / Path(original_pre).name
+                        if candidate.exists():
+                            source = candidate
+                    if source.exists():
+                        lose_d = losers_dir(SESSION.folder)
+                        lose_d.mkdir(exist_ok=True)
+                        target = _unique_target(lose_d, Path(original_pre).name)
+                        try:
+                            shutil.move(str(source), str(target))
+                        except OSError as e:
+                            logger.warning(f"prescreen unrestore move failed: {e}")
+                save_state(SESSION)
+            _log_event("UNRESTORE", f"prescreen: {original_pre}")
+            return jsonify({"ok": True, "unrestored": True})
+
+        # ---- group 路径 ----
+        _, group, original = _find_auto_rejected(gid, raw_path)
+        if group is None or original is None:
+            return jsonify({"error": "找不到这张照片"}), 404
+
+        if original not in group.manual_restored:
+            return jsonify({"ok": True, "unrestored": True})
+
+        failed: Optional[str] = None
+        if not SESSION.dry_run:
+            # 找到 restored 后 winners/ 里的实际文件
+            restored_dst = None
+            for entry in group.move_log:
+                if (entry.get("src") == original
+                        and entry.get("kind") in ("restored", "restored_companion")):
+                    dst = entry.get("dst", "")
+                    if Path(dst).exists():
+                        restored_dst = dst
+                        break
+            # 如果 winners/ 里没找到，可能是原位没动过（copy 模式）
+            win_d = winners_dir(SESSION.folder)
+            if restored_dst is None:
+                candidate = win_d / Path(original).name
+                if candidate.exists():
+                    restored_dst = str(candidate)
+
+            if restored_dst:
+                lose_d = losers_dir(SESSION.folder)
+                lose_d.mkdir(exist_ok=True)
+                target = _unique_target(lose_d, Path(original).name)
+                try:
+                    if SESSION.mode == "move":
+                        shutil.move(restored_dst, str(target))
+                    else:
+                        shutil.copy2(restored_dst, str(target))
+                        Path(restored_dst).unlink()
+                    group.move_log.append({"src": original, "dst": str(target), "kind": "loser"})
+                except OSError as e:
+                    failed = str(e)
+
+        if failed:
+            return jsonify({"error": failed}), 500
+
+        group.manual_restored.remove(original)
+        # 也从 extra_winners 移除
+        actual_path = _actual_auto_rejected_path(group, original, SESSION.folder)
+        for ep in [original, actual_path]:
+            if ep in group.extra_winners:
+                group.extra_winners.remove(ep)
+        save_state(SESSION)
+    _log_event("UNRESTORE", f"group={gid} original={original}")
+    return jsonify({"ok": True, "unrestored": True})
+
+
+@app.route("/api/image_exif")
+def api_image_exif():
+    """返回单张照片的 EXIF 参数信息。"""
+    if SESSION is None:
+        return jsonify({"error": "no session"}), 400
+    raw_path = request.args.get("path", "")
+    if not raw_path:
+        return jsonify({"error": "missing path"}), 400
+
+    # 解析实际文件路径
+    actual = _resolve_actual_path(raw_path, SESSION.folder)
+    if not actual or not Path(actual).exists():
+        return jsonify({"error": "file not found"}), 404
+
+    try:
+        info = parse_exif(str(actual))
+    except Exception:
+        info = {}
+    return jsonify(info)
+
+
+def _resolve_actual_path(raw_path: str, folder: str) -> Optional[str]:
+    """尝试在多种目录下定位文件的实际路径。"""
+    from pathlib import Path
+    candidates = [
+        raw_path,
+        str(Path(folder) / raw_path),
+        str(winners_dir(folder) / Path(raw_path).name),
+        str(losers_dir(folder) / Path(raw_path).name),
+    ]
+    for c in candidates:
+        if Path(c).exists():
+            return c
+    return None
 
 
 def _run_grouping_async(accepted_infos, old_session_snapshot):
@@ -3178,6 +3680,7 @@ def api_confirm_prescreen():
         if SESSION.groups:
             SESSION.prescreen_reviewed = True
             save_state(SESSION)
+            _log_event("PRESREEN", "confirmed all rejected (groups exist)")
             return jsonify({"ok": True, "async": False})
 
         infos = _infos_from_memory_or_cache(SESSION.folder)
@@ -3297,6 +3800,7 @@ def api_regroup():
     new_session.prescreen_restored = list(SESSION.prescreen_restored)
     with LOCK:
         SESSION = new_session
+    _log_event("REGROUP", f"near={threshold_near} far={threshold_far} seconds={near_seconds} groups={len(SESSION.groups)}")
     return jsonify({
         "ok": True,
         "total_groups": len(SESSION.groups),
@@ -3577,6 +4081,15 @@ def _winner_paths() -> list[str]:
                     actual = str(cand)
             if Path(actual).exists():
                 paths.append(actual)
+    # prescreen 恢复的照片也算胜者
+    for original in SESSION.prescreen_restored:
+        actual = original
+        if not Path(actual).exists():
+            cand = winners_dir(SESSION.folder) / Path(original).name
+            if cand.exists():
+                actual = str(cand)
+        if Path(actual).exists():
+            paths.append(actual)
     return paths
 
 
@@ -3636,6 +4149,44 @@ def api_watermark_preview():
     })
 
 
+@app.route("/api/watermark/export_one", methods=["POST"])
+def api_watermark_export_one():
+    """导出单张水印照片，直接返回 JPEG 文件供浏览器下载。"""
+    if SESSION is None:
+        return jsonify({"error": "no session"}), 400
+    winners = _winner_paths()
+    if not winners:
+        return jsonify({"error": "没有 winner 照片可导出"}), 400
+
+    from pic_selecter.watermark import WatermarkConfig, render
+    cfg_dict = request.get_json(silent=True) or {}
+    cfg = WatermarkConfig.from_dict(cfg_dict)
+
+    try:
+        idx = int(cfg_dict.get("preview_index", 0))
+    except (ValueError, TypeError):
+        idx = 0
+    idx = max(0, min(idx, len(winners) - 1))
+    src = winners[idx]
+
+    try:
+        data = render(src, cfg)
+    except Exception as e:
+        logger.exception("watermark single export failed")
+        return jsonify({"error": f"{type(e).__name__}: {e}"}), 500
+
+    from flask import Response
+    from urllib.parse import quote
+    raw_name = Path(src).stem + "_wm.jpg"
+    ascii_name = "watermark.jpg"
+    encoded = quote(raw_name, safe='')
+    resp = Response(data, mimetype="image/jpeg")
+    resp.headers["Content-Disposition"] = (
+        f"attachment; filename=\"{ascii_name}\"; filename*=UTF-8''{encoded}"
+    )
+    return resp
+
+
 def _run_watermark_job(src_paths: list[str], dst: Path, cfg) -> None:
     global WATERMARK_JOB
     job = WATERMARK_JOB
@@ -3664,6 +4215,7 @@ def _run_watermark_job(src_paths: list[str], dst: Path, cfg) -> None:
             f"watermark: 完成 ok={result['ok']} failed={len(result['failed'])} "
             f"out={dst}"
         )
+        _log_event("WATERMARK", f"done ok={result['ok']} failed={len(result['failed'])} out={dst}")
     except Exception as e:
         logger.exception("watermark batch error")
         job.status = "error"
@@ -3731,7 +4283,7 @@ def api_watermark_status():
 @app.route("/api/watermark/cancel", methods=["POST"])
 def api_watermark_cancel():
     if WATERMARK_JOB is None or WATERMARK_JOB.status != "running":
-        return jsonify({"ok": False, "error": "no running job"}), 400
+        return jsonify({"ok": True, "status": "idle"})
     WATERMARK_JOB.cancel_requested = True
     return jsonify({"ok": True})
 

@@ -52,7 +52,7 @@ class QualityInfo:
     clipiqa_score: Optional[float] = None
     # 每张脸的明细：bbox/sharpness/eye_score/det_score/area_ratio；用于多脸硬拒规则
     faces_detail: list[dict] = field(default_factory=list)
-    # 土豪模式：LLM 给的判定 + 中文短理由（其他模式恒为 None）
+    # 天眼模式：LLM 给的判定 + 中文短理由（其他模式恒为 None）
     llm_verdict: Optional[str] = None         # "pass" | "reject"
     llm_reason: Optional[str] = None
     # 极速模式专属：fast_quality 产出的中间量；expert 模式恒为 None
@@ -346,7 +346,7 @@ def analyze_basic(
     llm_verdict: Optional[str] = None,
     llm_reason: Optional[str] = None,
 ) -> QualityInfo:
-    """土豪模式专用：仅算公共基础指标 + 接收 LLM 判定，不跑任何本地拒片规则。
+    """天眼模式专用：仅算公共基础指标 + 接收 LLM 判定，不跑任何本地拒片规则。
 
     返回的 QualityInfo：
       - 基础信号（尺寸、亮度、对比度、曝光比、entropy、blur_score）正常填写，

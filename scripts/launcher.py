@@ -30,7 +30,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-GITHUB_OWNER = "zhaoyue4810"
+GITHUB_OWNER = "Alleyf"
 GITHUB_REPO = "pianke"
 GITHUB_BRANCH = "main"
 
@@ -87,7 +87,7 @@ MODE_PACKAGES = {
 MODE_LABELS = {
     "fast": "极速模式（纯本地，约 200MB，下载 1-3 分钟）",
     "expert": "专家模式（深度学习，约 2-3GB，下载 5-15 分钟）",
-    "tycoon": "土豪模式（LLM 判图，约 5MB，需自备 API key）",
+    "tycoon": "天眼模式（LLM 判图，约 5MB，需自备 API key）",
 }
 
 
