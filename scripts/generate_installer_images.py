@@ -1,318 +1,368 @@
+import os
 import math
 from PIL import Image, ImageDraw, ImageFont
 
 OUTPUT_DIR = "src-tauri/installer-assets"
 
+# ---------------------------------------------------------------------
+# Visual direction
+# ---------------------------------------------------------------------
+# 1. Keep the original font files and font family choices unchanged.
+# 2. Replace repeated camera / AI / grid icons with one calmer brand mark.
+# 3. Use stronger whitespace, warm cards, and installer-friendly hierarchy.
+# 4. Draw at 3x resolution and downsample to BMP for smoother edges.
+
+SCALE = 3
+RESAMPLE = getattr(Image, "Resampling", Image).LANCZOS
+
 # Color palette
 TERRACOTTA = (204, 120, 92)
+TERRACOTTA_DARK = (172, 84, 64)
+TERRACOTTA_LIGHT = (224, 148, 116)
 CREAM = (245, 239, 229)
 CREAM2 = (247, 242, 234)
+CARD = (255, 250, 244)
+CARD_WARM = (250, 242, 235)
 DARK_BROWN = (45, 36, 29)
+MUTED_BROWN = (112, 94, 82)
+SOFT_BROWN = (150, 124, 108)
 WHITE = (255, 247, 242)
 LIGHT_WHITE = (249, 233, 226)
 MEDIUM_WHITE = (236, 199, 186)
+LINE = (226, 216, 203)
+SHADOW = (230, 218, 205)
 
 APP_NAME_CN = "片刻"
 APP_NAME_EN = "Pianke"
 AUTHOR = "Alleyf & zhaoyue4810"
-TAGLINE_1 = "AI 协助初筛与分组"
-TAGLINE_2 = "把最终决定权"
-TAGLINE_3 = "留给摄影师自己"
-LOCAL_NOTE = "本地运行 · 不上传"
-SHORT_DESC = "本地照片擂台式选片工具"
 
-# Fonts
-font_yahei_12 = ImageFont.truetype("msyh.ttc", 12)
-font_yahei_14 = ImageFont.truetype("msyh.ttc", 14)
-font_yahei_16 = ImageFont.truetype("msyh.ttc", 16)
-font_yahei_18 = ImageFont.truetype("msyh.ttc", 18)
-font_yahei_22 = ImageFont.truetype("msyh.ttc", 22)
-font_yahei_26 = ImageFont.truetype("msyh.ttc", 26)
-font_yahei_30 = ImageFont.truetype("msyh.ttc", 30)
-font_segoe_10 = ImageFont.truetype("segoeui.ttf", 10)
-font_segoe_12 = ImageFont.truetype("segoeui.ttf", 12)
-font_segoe_14 = ImageFont.truetype("segoeui.ttf", 14)
+# Copywriting can be optimized, but the original meaning is kept.
+TAGLINE_HERO = "AI 先筛，摄影师终选"
+TAGLINE_SUB = "本地照片筛选与相似分组"
+TAGLINE_NOTE = "更快找到值得保留的瞬间"
+LOCAL_NOTE = "本地运行 · 不上传"
+SHORT_DESC = "本地 AI 照片筛选与相似分组工具"
+
+# Fonts: keep the same font files as the previous version.
+# On Windows, these are usually available from the system font directory.
+font_yahei_12 = ImageFont.truetype("msyh.ttc", 12 * SCALE)
+font_yahei_13 = ImageFont.truetype("msyh.ttc", 13 * SCALE)
+font_yahei_14 = ImageFont.truetype("msyh.ttc", 14 * SCALE)
+font_yahei_15 = ImageFont.truetype("msyh.ttc", 15 * SCALE)
+font_yahei_16 = ImageFont.truetype("msyh.ttc", 16 * SCALE)
+font_yahei_18 = ImageFont.truetype("msyh.ttc", 18 * SCALE)
+font_yahei_20 = ImageFont.truetype("msyh.ttc", 20 * SCALE)
+font_yahei_22 = ImageFont.truetype("msyh.ttc", 22 * SCALE)
+font_yahei_26 = ImageFont.truetype("msyh.ttc", 26 * SCALE)
+font_yahei_30 = ImageFont.truetype("msyh.ttc", 30 * SCALE)
+font_segoe_10 = ImageFont.truetype("segoeui.ttf", 10 * SCALE)
+font_segoe_11 = ImageFont.truetype("segoeui.ttf", 11 * SCALE)
+font_segoe_12 = ImageFont.truetype("segoeui.ttf", 12 * SCALE)
+font_segoe_14 = ImageFont.truetype("segoeui.ttf", 14 * SCALE)
+
+
+def px(value):
+    return int(round(value * SCALE))
+
+
+def box(values):
+    return [px(v) for v in values]
 
 
 def tb(text, font):
-    """Return (w, h) of text."""
+    """Return logical-pixel (w, h) of text."""
     tmp = Image.new("RGB", (1, 1))
     d = ImageDraw.Draw(tmp)
     b = d.textbbox((0, 0), text, font=font)
-    return b[2] - b[0], b[3] - b[1]
+    return (b[2] - b[0]) / SCALE, (b[3] - b[1]) / SCALE
 
 
-# ── Icon drawing functions (all use top-left origin) ────────────────
-
-def draw_camera_icon(draw, x, y, size, color):
-    """Draw camera icon. Returns (w, h)."""
-    s = size
-    body_w, body_h = int(s * 1.4), int(s * 1.0)
-    bump_w, bump_h = int(s * 0.5), int(s * 0.25)
-    total_w = body_w
-    total_h = body_h + bump_h
-    cx = x + total_w // 2
-    cy = y + bump_h + body_h // 2
-    draw.rectangle([cx - body_w // 2, cy - body_h // 2,
-                     cx + body_w // 2 - 1, cy + body_h // 2 - 1], fill=color)
-    draw.rectangle([cx - bump_w // 2, cy - body_h // 2 - bump_h,
-                     cx + bump_w // 2 - 1, cy - body_h // 2 - 1], fill=color)
-    lens_r = int(s * 0.4)
-    inner = DARK_BROWN if color == TERRACOTTA else WHITE
-    draw.ellipse([cx - lens_r, cy - lens_r, cx + lens_r - 1, cy + lens_r - 1],
-                  outline=color, fill=inner)
-    lens_r2 = int(s * 0.2)
-    draw.ellipse([cx - lens_r2, cy - lens_r2, cx + lens_r2 - 1, cy + lens_r2 - 1],
-                  fill=color)
-    return total_w, total_h
+def new_canvas(W, H, fill):
+    return Image.new("RGB", (px(W), px(H)), fill)
 
 
-def draw_ai_icon(draw, x, y, size, color):
-    """Draw AI neural network icon. Returns (size, size)."""
-    s = size
-    r = int(s * 0.5)
-    cx, cy = x + r, y + r
-    draw.ellipse([cx - r, cy - r, cx + r - 1, cy + r - 1], outline=color, width=2)
-    nr = max(2, int(s * 0.12))
-    draw.ellipse([cx - nr, cy - nr, cx + nr, cy + nr], fill=color)
-    for angle in [0, 120, 240]:
-        rad = math.radians(angle)
-        nx = cx + int(r * 0.6 * math.cos(rad))
-        ny = cy + int(r * 0.6 * math.sin(rad))
-        nr2 = max(1, int(s * 0.07))
-        draw.line([(cx, cy), (nx, ny)], fill=color, width=1)
-        draw.ellipse([nx - nr2, ny - nr2, nx + nr2, ny + nr2], fill=color)
-    return s, s
+def save_bmp(img, W, H, name):
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    out = img.resize((W, H), RESAMPLE)
+    out.save(f"{OUTPUT_DIR}/{name}", "BMP")
+    print(f"Generated {name} ({W}x{H})")
 
 
-def draw_lock_icon(draw, x, y, size, color):
-    """Draw lock icon. Returns (w, h)."""
-    s = size
-    body_w, body_h = int(s * 0.8), int(s * 0.6)
-    arch_r = int(s * 0.3)
-    total_h = body_h + arch_r + int(s * 0.05)
-    total_w = body_w
-    cx, cy = x + total_w // 2, y + total_h // 2
-    draw.rectangle([cx - body_w // 2, cy - body_h // 2 + int(s * 0.15),
-                     cx + body_w // 2 - 1, cy + body_h // 2 - 1], fill=color)
-    draw.arc([cx - arch_r, cy - body_h // 2 - int(s * 0.05),
-              cx + arch_r, cy - body_h // 2 + int(s * 0.35)],
-             180, 0, fill=color, width=2)
-    return total_w, total_h
+def draw_text(draw, xy, text, fill, font):
+    draw.text((px(xy[0]), px(xy[1])), text, fill=fill, font=font)
 
 
-def draw_photo_grid_icon(draw, x, y, size, color):
-    """Draw 2x2 photo grid icon. Returns (w, h)."""
-    s = size
-    cell = int(s * 0.35)
-    gap = int(s * 0.1)
-    for row in range(2):
-        for col in range(2):
-            cx = x + col * (cell + gap)
-            cy = y + row * (cell + gap)
-            draw.rectangle([cx, cy, cx + cell - 1, cy + cell - 1], outline=color, width=1)
-    total = 2 * cell + gap
-    return total, total
+def draw_centered_text(draw, x, y, width, text, fill, font):
+    tw, _ = tb(text, font)
+    draw_text(draw, (x + (width - tw) / 2, y), text, fill, font)
 
 
-# ── Sidebar content (used by nsis-sidebar and wix-dialog left) ─────
-
-def draw_sidebar_content(draw, W, H):
-    """Draw full sidebar on terracotta bg. Content: camera, name, tagline, author, local."""
-    px = 20  # text left padding
-    cx = W // 2
-    y = 16
-
-    # Camera icon (centered)
-    cam_w, cam_h = draw_camera_icon(draw, cx - 15, y, 22, WHITE)
-    y += cam_h + 12
-
-    # App name
-    tw, th = tb(APP_NAME_CN, font_yahei_30)
-    draw.text((px, y), APP_NAME_CN, fill=WHITE, font=font_yahei_30)
-    y += th + 4
-
-    # English name
-    draw.text((px, y), APP_NAME_EN, fill=LIGHT_WHITE, font=font_segoe_12)
-    y += tb(APP_NAME_EN, font_segoe_12)[1] + 14
-
-    # AI icon (centered)
-    ai_size = 18
-    draw_ai_icon(draw, cx - ai_size // 2, y, ai_size, LIGHT_WHITE)
-    y += ai_size + 8
-
-    # Taglines
-    for line in [TAGLINE_1, TAGLINE_2, TAGLINE_3]:
-        draw.text((px, y), line, fill=WHITE, font=font_yahei_16)
-        y += tb(line, font_yahei_16)[1] + 4
-
-    y += 14
-
-    # Separator
-    draw.line([(px, y), (W - px, y)], fill=MEDIUM_WHITE, width=1)
-    y += 10
-
-    # Author
-    draw.text((px, y), "作者", fill=LIGHT_WHITE, font=font_yahei_12)
-    y += tb("作者", font_yahei_12)[1] + 2
-    draw.text((px, y), AUTHOR, fill=WHITE, font=font_segoe_12)
-    y += tb(AUTHOR, font_segoe_12)[1] + 14
-
-    # Lock + local note
-    lock_size = 14
-    tw_n, th_n = tb(LOCAL_NOTE, font_yahei_14)
-    lock_w = int(lock_size * 0.8)
-    lock_top = y + max(0, (th_n - lock_size) // 2)
-    draw_lock_icon(draw, px, lock_top, lock_size, LIGHT_WHITE)
-    nx = px + lock_w + 6
-    draw.text((nx, y), LOCAL_NOTE, fill=WHITE, font=font_yahei_14)
-    draw.line([(nx, y + th_n + 1), (nx + tw_n, y + th_n + 1)], fill=WHITE, width=1)
+def draw_line(draw, points, fill, width=1):
+    draw.line([(px(x), px(y)) for x, y in points], fill=fill, width=px(width))
 
 
-# ── Image generators ────────────────────────────────────────────────
+def draw_rect(draw, bbox, fill, outline=None, width=1):
+    draw.rectangle(box(bbox), fill=fill, outline=outline, width=px(width))
+
+
+def draw_round(draw, bbox, radius, fill, outline=None, width=1):
+    draw.rounded_rectangle(box(bbox), radius=px(radius), fill=fill, outline=outline, width=px(width))
+
+
+def draw_ellipse(draw, bbox, fill=None, outline=None, width=1):
+    draw.ellipse(box(bbox), fill=fill, outline=outline, width=px(width))
+
+
+def draw_vertical_gradient(img, W, H, top, bottom):
+    draw = ImageDraw.Draw(img)
+    total_h = px(H)
+    for y in range(total_h):
+        t = y / max(1, total_h - 1)
+        color = tuple(int(top[i] * (1 - t) + bottom[i] * t) for i in range(3))
+        draw.line([(0, y), (px(W), y)], fill=color)
+
+
+def draw_soft_orbits(draw, cx, cy, radius, color):
+    """Subtle decorative rings; not an icon, just quiet brand texture."""
+    for i, alpha_like in enumerate([0, 1, 2]):
+        r = radius + i * 13
+        c = tuple(min(255, int(color[j] + i * 14)) for j in range(3))
+        draw_ellipse(draw, (cx - r, cy - r, cx + r, cy + r), outline=c, width=1)
+
+
+def draw_brand_mark(draw, x, y, size, color, fill=None, accent=None):
+    """Single abstract photo-selection mark used as the app's visual symbol."""
+    fill = fill if fill is not None else CARD
+    accent = accent if accent is not None else TERRACOTTA_LIGHT
+
+    # Back photo sheet
+    draw_round(
+        draw,
+        (x + size * 0.08, y + size * 0.18, x + size * 0.78, y + size * 0.82),
+        size * 0.12,
+        fill=None,
+        outline=accent,
+        width=1,
+    )
+
+    # Front selected sheet
+    draw_round(
+        draw,
+        (x + size * 0.23, y + size * 0.06, x + size * 0.94, y + size * 0.72),
+        size * 0.12,
+        fill=fill,
+        outline=color,
+        width=2,
+    )
+
+    # Minimal image horizon inside the selected sheet
+    ix1 = x + size * 0.33
+    iy1 = y + size * 0.34
+    ix2 = x + size * 0.83
+    iy2 = y + size * 0.61
+    draw_line(draw, [(ix1, iy2), (ix1 + size * 0.16, iy1 + size * 0.07),
+                     (ix1 + size * 0.29, iy1 + size * 0.18),
+                     (ix2, iy1)], fill=color, width=1)
+    draw_ellipse(
+        draw,
+        (x + size * 0.66, y + size * 0.18, x + size * 0.76, y + size * 0.28),
+        fill=accent,
+    )
+
+    # A small selection dot: suggests "chosen" without repeating a checkmark icon.
+    draw_ellipse(
+        draw,
+        (x + size * 0.75, y + size * 0.58, x + size * 0.86, y + size * 0.69),
+        fill=color,
+    )
+
+
+def draw_pill(draw, x, y, text, font, fill, fg, pad_x=9, pad_y=4, outline=None):
+    tw, th = tb(text, font)
+    w = tw + pad_x * 2
+    h = th + pad_y * 2
+    draw_round(draw, (x, y, x + w, y + h), h / 2, fill=fill, outline=outline, width=1)
+    draw_text(draw, (x + pad_x, y + pad_y - 1), text, fg, font)
+    return w, h
+
+
+def draw_feature_card(draw, x, y, w, number, title, desc):
+    draw_round(draw, (x + 1, y + 2, x + w + 1, y + 50), 12, fill=SHADOW)
+    draw_round(draw, (x, y, x + w, y + 48), 12, fill=CARD, outline=LINE, width=1)
+
+    draw_text(draw, (x + 13, y + 10), number, TERRACOTTA, font_segoe_12)
+    draw_text(draw, (x + 44, y + 8), title, DARK_BROWN, font_yahei_14)
+    draw_text(draw, (x + 44, y + 28), desc, MUTED_BROWN, font_yahei_12)
+
+
+def draw_footer_local(draw, x, y, width):
+    """Privacy footer with no lock icon; avoids visual repetition."""
+    text = LOCAL_NOTE
+    tw, th = tb(text, font_yahei_13)
+    pill_w = tw + 26
+    draw_round(
+        draw,
+        (x + (width - pill_w) / 2, y, x + (width + pill_w) / 2, y + th + 13),
+        13,
+        fill=(188, 96, 73),
+        outline=TERRACOTTA_LIGHT,
+        width=1,
+    )
+    draw_text(draw, (x + (width - tw) / 2, y + 5), text, WHITE, font_yahei_13)
+
+
+# ---------------------------------------------------------------------
+# Shared sidebar / hero composition
+# ---------------------------------------------------------------------
+
+def draw_sidebar_content(draw, W, H, compact=False):
+    """Terracotta brand block with one brand mark, clear type, and calm footer."""
+    draw_soft_orbits(draw, W - 18, 28, 30, (211, 130, 101))
+
+    y = 24 if not compact else 18
+    mark_size = 52 if not compact else 42
+    draw_brand_mark(
+        draw,
+        (W - mark_size) / 2 - 2,
+        y,
+        mark_size,
+        WHITE,
+        fill=(211, 126, 96),
+        accent=MEDIUM_WHITE,
+    )
+    y += mark_size + (15 if not compact else 10)
+
+    draw_centered_text(draw, 0, y, W, APP_NAME_CN, WHITE, font_yahei_30)
+    y += tb(APP_NAME_CN, font_yahei_30)[1] + 3
+    draw_centered_text(draw, 0, y, W, APP_NAME_EN, LIGHT_WHITE, font_segoe_12)
+    y += tb(APP_NAME_EN, font_segoe_12)[1] + 22
+
+    # Hero copy: one strong line + two supporting lines.
+    draw_centered_text(draw, 0, y, W, TAGLINE_HERO, WHITE, font_yahei_16)
+    y += 25
+    draw_centered_text(draw, 0, y, W, TAGLINE_SUB, LIGHT_WHITE, font_yahei_13)
+    y += 19
+    draw_centered_text(draw, 0, y, W, TAGLINE_NOTE, LIGHT_WHITE, font_yahei_13)
+
+    # Bottom author and local note. Kept light so the installer UI has breathing room.
+    footer_y = H - (74 if not compact else 66)
+    draw_line(draw, [(22, footer_y), (W - 22, footer_y)], MEDIUM_WHITE, width=1)
+    footer_y += 12
+    draw_centered_text(draw, 0, footer_y, W, "作者", LIGHT_WHITE, font_yahei_12)
+    footer_y += 16
+    draw_centered_text(draw, 0, footer_y, W, AUTHOR, WHITE, font_segoe_11)
+    draw_footer_local(draw, 12, H - 29, W - 24)
+
+
+# ---------------------------------------------------------------------
+# Image generators
+# ---------------------------------------------------------------------
 
 def generate_nsis_sidebar():
-    """NSIS sidebar: 164x314, full terracotta with complete branding."""
+    """NSIS sidebar: 164x314."""
     W, H = 164, 314
-    img = Image.new("RGB", (W, H), TERRACOTTA)
+    img = new_canvas(W, H, TERRACOTTA)
+    draw_vertical_gradient(img, W, H, TERRACOTTA_DARK, TERRACOTTA)
     draw = ImageDraw.Draw(img)
+
+    # Tiny warm highlight at bottom left for depth.
+    draw_ellipse(draw, (-58, H - 40, 74, H + 92), fill=(197, 105, 81))
     draw_sidebar_content(draw, W, H)
-    img.save(f"{OUTPUT_DIR}/nsis-sidebar.bmp", "BMP")
-    print(f"Generated nsis-sidebar.bmp ({W}x{H})")
+
+    save_bmp(img, W, H, "nsis-sidebar.bmp")
 
 
 def generate_nsis_header():
-    """NSIS header: 150x57, terracotta bg, camera + app name (vertical)."""
+    """NSIS header: 150x57. Typography-first, no repeated camera/grid icon."""
     W, H = 150, 57
-    img = Image.new("RGB", (W, H), TERRACOTTA)
+    img = new_canvas(W, H, CREAM)
     draw = ImageDraw.Draw(img)
 
-    cam_size = 20
-    cam_w, cam_h = draw_camera_icon(draw, 0, 0, cam_size, WHITE)
-    tw, th = tb(APP_NAME_CN, font_yahei_22)
+    draw_rect(draw, (0, 0, 6, H), fill=TERRACOTTA)
+    draw_round(draw, (16, 11, 134, 46), 10, fill=CARD, outline=LINE, width=1)
 
-    total = cam_h + 4 + th
-    y = (H - total) // 2
+    draw_centered_text(draw, 16, 8, 118, APP_NAME_CN, DARK_BROWN, font_yahei_22)
+    draw_centered_text(draw, 16, 33, 118, "Pianke Setup", TERRACOTTA, font_segoe_10)
 
-    draw_camera_icon(draw, (W - cam_w) // 2, y, cam_size, WHITE)
-    draw.text(((W - tw) // 2, y + cam_h + 4), APP_NAME_CN, fill=WHITE, font=font_yahei_22)
-
-    img.save(f"{OUTPUT_DIR}/nsis-header.bmp", "BMP")
-    print(f"Generated nsis-header.bmp ({W}x{H})")
+    save_bmp(img, W, H, "nsis-header.bmp")
 
 
 def generate_wix_banner():
-    """WIX banner: 493x58, terracotta stripe + cream, app name + short desc."""
+    """WIX banner: 493x58. Clean brand banner with one small mark and aligned text."""
     W, H = 493, 58
-    img = Image.new("RGB", (W, H), CREAM)
+    img = new_canvas(W, H, CREAM2)
     draw = ImageDraw.Draw(img)
 
-    stripe_w = 13
-    draw.rectangle([0, 0, stripe_w - 1, H - 1], fill=TERRACOTTA)
+    draw_rect(draw, (0, 0, W, H), fill=CREAM2)
+    draw_rect(draw, (0, 0, 11, H), fill=TERRACOTTA)
+    draw_ellipse(draw, (W - 82, -54, W + 32, 60), fill=(242, 230, 219))
 
-    # App name (large, centered) + short desc below
-    tw_app, th_app = tb(APP_NAME_CN, font_yahei_26)
-    tw_desc, th_desc = tb(SHORT_DESC, font_yahei_14)
+    mark_size = 34
+    draw_brand_mark(draw, 26, 12, mark_size, TERRACOTTA, fill=CARD, accent=SOFT_BROWN)
 
-    total = th_app + 2 + th_desc
-    y = (H - total) // 2
+    draw_text(draw, (75, 9), APP_NAME_CN, DARK_BROWN, font_yahei_22)
+    draw_text(draw, (127, 16), APP_NAME_EN, TERRACOTTA, font_segoe_12)
+    draw_text(draw, (75, 35), SHORT_DESC, MUTED_BROWN, font_yahei_13)
 
-    draw.text(((W - tw_app) // 2, y), APP_NAME_CN, fill=DARK_BROWN, font=font_yahei_26)
-    draw.text(((W - tw_desc) // 2, y + th_app + 2), SHORT_DESC, fill=DARK_BROWN, font=font_yahei_14)
+    draw_pill(draw, W - 133, 18, LOCAL_NOTE, font_yahei_12, CARD, TERRACOTTA, outline=LINE)
 
-    # Photo grid decorative icon on far right
-    grid_size = 24
-    grid_w = 2 * int(grid_size * 0.35) + int(grid_size * 0.1)
-    draw_photo_grid_icon(draw, W - grid_w - 16, (H - grid_w) // 2, grid_size, TERRACOTTA)
-
-    img.save(f"{OUTPUT_DIR}/wix-banner.bmp", "BMP")
-    print(f"Generated wix-banner.bmp ({W}x{H})")
+    save_bmp(img, W, H, "wix-banner.bmp")
 
 
 def generate_wix_dialog():
-    """WIX dialog: 493x312, terracotta sidebar + cream right panel.
-    Left: full branding (sidebar content).
-    Right: product description (NO duplication of sidebar content)."""
+    """WIX dialog: 493x312.
+    Left: brand impression.
+    Right: installer welcome + feature cards, no duplicated sidebar content.
+    """
     W, H = 493, 312
-    img = Image.new("RGB", (W, H), CREAM2)
+    sidebar_w = 176
+
+    img = new_canvas(W, H, CREAM2)
     draw = ImageDraw.Draw(img)
 
-    stripe_w = 164
-    draw.rectangle([0, 0, stripe_w - 1, H - 1], fill=TERRACOTTA)
+    # Background
+    draw_rect(draw, (0, 0, W, H), fill=CREAM2)
+    draw_rect(draw, (sidebar_w, 0, W, H), fill=CREAM2)
+    draw_round(draw, (sidebar_w + 16, 17, W - 14, H - 17), 18, fill=CARD_WARM)
+    draw_round(draw, (sidebar_w + 16, 17, W - 14, H - 17), 18, fill=None, outline=LINE, width=1)
 
-    # === LEFT SIDEBAR: full branding ===
-    draw_sidebar_content(draw, stripe_w, H)
+    # Left brand block
+    left_img = img.crop((0, 0, px(sidebar_w), px(H)))
+    draw_vertical_gradient(left_img, sidebar_w, H, TERRACOTTA_DARK, TERRACOTTA)
+    img.paste(left_img, (0, 0))
+    draw = ImageDraw.Draw(img)
 
-    # === RIGHT PANEL: product description (unique content, no duplicates) ===
-    rx = stripe_w + 28  # right content left margin
-    rw = W - stripe_w - 56  # right content width
+    draw_ellipse(draw, (-48, -42, 102, 108), fill=(185, 90, 68))
+    draw_ellipse(draw, (100, H - 104, 240, H + 42), fill=(212, 130, 100))
+    draw_sidebar_content(draw, sidebar_w, H, compact=True)
 
-    y = 24
+    # Right panel
+    rx = sidebar_w + 34
+    rw = W - sidebar_w - 58
+    y = 30
 
-    # App name (large, centered in right panel)
-    tw, th = tb(APP_NAME_CN, font_yahei_30)
-    draw.text((rx + (rw - tw) // 2, y), APP_NAME_CN, fill=DARK_BROWN, font=font_yahei_30)
-    y += th + 4
+    draw_text(draw, (rx, y), "欢迎使用片刻安装向导", DARK_BROWN, font_yahei_20)
+    y += 30
+    draw_text(draw, (rx, y), "在安装前，先认识一下这款为摄影师准备的", MUTED_BROWN, font_yahei_13)
+    y += 18
+    draw_text(draw, (rx, y), "本地照片筛选工具。", MUTED_BROWN, font_yahei_13)
+    y += 24
 
-    # English name
-    tw, th = tb(APP_NAME_EN, font_segoe_14)
-    draw.text((rx + (rw - tw) // 2, y), APP_NAME_EN, fill=TERRACOTTA, font=font_segoe_14)
-    y += th + 16
+    draw_line(draw, [(rx, y), (rx + rw, y)], LINE, width=1)
+    y += 15
 
-    # Separator
-    draw.line([(rx, y), (rx + rw, y)], fill=CREAM, width=1)
-    y += 12
+    draw_feature_card(draw, rx, y, rw, "01", "先把失败片筛掉", "模糊、闭眼、明显失焦优先处理")
+    y += 58
+    draw_feature_card(draw, rx, y, rw, "02", "再把相似片分组", "相近构图自动归类，减少重复浏览")
+    y += 58
+    draw_feature_card(draw, rx, y, rw, "03", "最后由你决定", "AI 只做辅助，保留你的审美判断")
+    y += 62
 
-    # Product description paragraph (not repeated taglines)
-    desc_lines = [
-        "片刻是一款面向摄影师与摄影爱",
-        "好者的本地照片选片工具。",
-        "",
-        "通过 AI 智能分析，自动完成",
-        "失败片初筛与相似照片分组，",
-        "将最终审美决定权留给你自己。",
-        "",
-        "所有处理均在本地完成，",
-        "你的照片永远不会离开你的电脑。"
-    ]
-    for line in desc_lines:
-        if line == "":
-            y += 6
-        else:
-            draw.text((rx, y), line, fill=DARK_BROWN, font=font_yahei_16)
-            y += tb(line, font_yahei_16)[1] + 2
+    # Privacy banner
+    draw_round(draw, (rx, y, rx + rw, y + 38), 13, fill=(247, 235, 226), outline=LINE, width=1)
+    # draw_text(draw, (rx + 15, y + 9), "照片处理均在本地完成，不会上传云端。", DARK_BROWN, font_yahei_13)
 
-    y += 14
-
-    # Separator
-    draw.line([(rx, y), (rx + rw, y)], fill=CREAM, width=1)
-    y += 10
-
-    # Feature list with small bullet icons
-    features = [
-        ("AI 智能初筛", "自动过滤模糊、闭眼等失败照片"),
-        ("相似分组", "智能识别相似照片，减少选择困难"),
-        ("擂台式选片", "两张对比快速决策，高效选片"),
-        ("本地隐私", "所有数据本地处理，不上传云端"),
-    ]
-
-    for feat_title, feat_desc in features:
-        # Small circle bullet
-        bullet_r = 3
-        bx = rx + 6
-        by = y + 6
-        draw.ellipse([bx - bullet_r, by - bullet_r, bx + bullet_r, by + bullet_r], fill=TERRACOTTA)
-
-        # Title
-        draw.text((rx + 14, y - 2), feat_title, fill=DARK_BROWN, font=font_yahei_14)
-        y += tb(feat_title, font_yahei_14)[1] + 2
-
-        # Description
-        draw.text((rx + 14, y), feat_desc, fill=(100, 90, 80), font=font_yahei_12)
-        y += tb(feat_desc, font_yahei_12)[1] + 8
-
-    img.save(f"{OUTPUT_DIR}/wix-dialog.bmp", "BMP")
-    print(f"Generated wix-dialog.bmp ({W}x{H})")
+    save_bmp(img, W, H, "wix-dialog.bmp")
 
 
 if __name__ == "__main__":

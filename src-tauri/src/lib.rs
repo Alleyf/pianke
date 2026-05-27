@@ -6,6 +6,10 @@ use std::sync::Mutex;
 use tauri::{AppHandle, Manager, State};
 use tauri_plugin_shell::process::{CommandChild, CommandEvent};
 use tauri_plugin_shell::ShellExt;
+use tauri::{
+    menu::{MenuBuilder, MenuItemBuilder},
+    tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
+};
 
 #[derive(Default)]
 struct BackendState {
@@ -180,13 +184,66 @@ pub fn run() {
         .manage(BackendState::default())
         .plugin(tauri_plugin_shell::init())
         .invoke_handler(tauri::generate_handler![start_backend, stop_backend])
+        .setup(|app| {
+            let show_item = MenuItemBuilder::with_id("show", "显示片刻").build(app)?;
+            let quit_item = MenuItemBuilder::with_id("quit", "退出片刻").build(app)?;
+            let menu = MenuBuilder::new(app)
+                .items(&[&show_item, &quit_item])
+                .build()?;
+
+            TrayIconBuilder::new()
+                .icon(app.default_window_icon().unwrap().clone())
+                .menu(&menu)
+                .on_menu_event(move |app, event| match event.id().as_ref() {
+                    "show" => {
+                        if let Some(window) = app.get_webview_window("main") {
+                            let _ = window.show();
+                            let _ = window.set_focus();
+                        }
+                    }
+                    "quit" => {
+                        let state = app.state::<BackendState>();
+                        let _ = shutdown_backend_state(&state);
+                        app.exit(0);
+                    }
+                    _ => {}
+                })
+                .on_tray_icon_event(|tray, event| {
+                    if let TrayIconEvent::Click {
+                        button: MouseButton::Left,
+                        button_state: MouseButtonState::Up,
+                        ..
+                    } = event
+                    {
+                        let app = tray.app_handle();
+                        if let Some(window) = app.get_webview_window("main") {
+                            let _ = window.show();
+                            let _ = window.set_focus();
+                        }
+                    }
+                })
+                .build(app)?;
+
+            Ok(())
+        })
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
 
-    let handle = app.handle().clone();
-    app.run(move |_handle, event| {
-        if matches!(event, tauri::RunEvent::Exit | tauri::RunEvent::ExitRequested { .. }) {
-            let state = handle.state::<BackendState>();
+    app.run(move |app_handle, event| {
+        if let tauri::RunEvent::WindowEvent {
+            event: tauri::WindowEvent::CloseRequested { api, .. },
+            ..
+        } = event
+        {
+            let window = app_handle.get_webview_window("main").unwrap();
+            let _ = window.hide();
+            api.prevent_close();
+        } else if matches!(
+            event,
+            tauri::RunEvent::Exit
+                | tauri::RunEvent::ExitRequested { .. }
+        ) {
+            let state = app_handle.state::<BackendState>();
             let _ = shutdown_backend_state(&state);
         }
     });
