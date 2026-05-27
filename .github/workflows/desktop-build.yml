@@ -72,7 +72,7 @@ jobs:
 
   release:
     needs: build
-    if: github.event_name == 'workflow_dispatch' && github.event.inputs.release_tag != ''
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.release_tag != '' || startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -86,10 +86,10 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.event.inputs.release_tag }}
-          name: 片刻 ${{ github.event.inputs.release_tag }}
+          tag_name: ${{ github.event.inputs.release_tag || github.ref_name }}
+          name: 片刻 ${{ github.event.inputs.release_tag || github.ref_name }}
           body: |
-            ## 片刻桌面版 ${{ github.event.inputs.release_tag }}
+            ## 片刻桌面版 ${{ github.event.inputs.release_tag || github.ref_name }}
 
             ### 下载
             - **Windows**: 片刻_x64-setup.exe
