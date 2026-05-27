@@ -2748,8 +2748,8 @@ def api_status():
     if SESSION is None:
         return jsonify({"ready": False})
     finished = sum(1 for g in SESSION.groups if g.finished)
-    winners = sum((1 if g.winner else 0) + len(g.extra_winners) for g in SESSION.groups)
-    losers = sum(len(g.losers) for g in SESSION.groups)
+    winners = sum((1 if g.winner else 0) + len(g.extra_winners) for g in SESSION.groups) + len(SESSION.prescreen_restored)
+    losers = sum(len(g.losers) for g in SESSION.groups) + max(0, len(SESSION.prescreen_rejected) - len(SESSION.prescreen_restored))
     image_count = sum(len(g.images) for g in SESSION.groups)
     if image_count == 0 and (SESSION.prescreen_rejected or not SESSION.prescreen_reviewed):
         image_count = len(_infos_from_memory_or_cache(SESSION.folder))
