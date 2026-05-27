@@ -6,6 +6,18 @@
 [![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey.svg)](#一键启动推荐)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
+## 界面预览
+
+| 着陆页 | 分析进度 | 初筛复核 |
+|:---:|:---:|:---:|
+| ![着陆页](static/screenshots/01-landing.png) | ![分析进度](static/screenshots/02-processing.png) | ![初筛复核](static/screenshots/03-prescreen.png) |
+
+| 分组预览 | 擂台 PK | 完成 · Winner 总览 |
+|:---:|:---:|:---:|
+| ![分组预览](static/screenshots/04-preview.png) | ![擂台 PK](static/screenshots/05-arena.png) | ![完成](static/screenshots/06-done.png) |
+
+***
+
 **片刻** 是一款专为摄影师和摄影爱好者设计的**本地照片擂台式选片工具**。它能够将一次拍摄中相似的几十甚至上百张照片自动归入"同一个瞬间"的组中，然后通过直观的 **左右 A/B 擂台 PK** 方式，让你快速挑出最满意的一张。
 
 当前仓库同时提供两条桌面路径：

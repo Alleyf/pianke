@@ -44,11 +44,11 @@ class QualityInfo:
 
     # 新增：显著性区域锐度（替代整图锐度，对虚化主体更友好）
     salient_sharpness: Optional[float] = None
-    # NIMA 美学（MobileNetV2，1-10）；None = 视觉模型未启用
-    aesthetic_score: Optional[float] = None
-    # MUSIQ 技术质量（pyiqa，0-100）；与 NIMA 互补——抓拍/纪实友好
+    # MANIQA 美学（pyiqa，0-1）；None = 视觉模型未启用
+    maniqa_score: Optional[float] = None
+    # MUSIQ 技术质量（pyiqa，0-100）；与 MANIQA 互补——抓拍/纪实友好
     musiq_score: Optional[float] = None
-    # CLIP-IQA+ LAION 美学（pyiqa，0-1）；与 NIMA 互补——构图偏好
+    # CLIP-IQA+ LAION 美学（pyiqa，0-1）；与 MANIQA 互补——构图偏好
     clipiqa_score: Optional[float] = None
     # 每张脸的明细：bbox/sharpness/eye_score/det_score/area_ratio；用于多脸硬拒规则
     faces_detail: list[dict] = field(default_factory=list)
@@ -86,10 +86,10 @@ PROFILES: dict[str, dict[str, float]] = {
         # 0.21-0.22 之间是"明显将闭未闭"的实测下沿；0.19 太保守、抓不到
         # 任何东西。
         "eyes_closed_ear": 0.22,
-        # 美学三模型阈值（≈ pic_test p30-p35，明显低于中位线才算"偏低"）。
+        # 美学三模型阈值。
         # 判定规则 2-of-3（任意两个低）；low_aesthetic 在 hard 列表会真的拒。
-        # 上一版 4.7 / 42 / 0.45 比实测分布下沿还低，等于不参与判定。
-        "nima_low": 5.0,
+        # MANIQA 0-1 范围，0.45 为偏低阈值；MUSIQ 0-100，55 为偏低；CLIP-IQA 0-1，0.55 为偏低。
+        "maniqa_low": 0.45,
         "musiq_low": 55.0,
         "clipiqa_low": 0.55,
     },
@@ -111,10 +111,10 @@ PROFILES: dict[str, dict[str, float]] = {
         # EAR > 0.55 已在 vision 侧兜成 None，这里不会把"坏数据"当成
         # "睁得很开"。0.25 能抓到"半睁/低头垂目"。
         "eyes_closed_ear": 0.25,
-        # 进阶档对标"组内 p40-p50"：摄影师相册里 MUSIQ 一般 60-75，定
-        # 在 68；CLIP-IQA 一般 0.55-0.75，定在 0.65。这两个分布跨度小，
-        # 卡在中位以下才能让"平庸"图至少 2 项落败。
-        "nima_low": 5.55,
+        # 进阶档对标"组内 p40-p50"：MUSIQ 一般 60-75，定
+        # 在 68；CLIP-IQA 一般 0.55-0.75，定在 0.65；MANIQA 一般
+        # 0.5-0.8，定在 0.55。这些分布跨度小，卡在中位以下才能让"平庸"图至少 2 项落败。
+        "maniqa_low": 0.55,
         "musiq_low": 68.0,
         "clipiqa_low": 0.65,
     },
@@ -159,7 +159,7 @@ def analyze_image(
     strength: Strength | str = "standard",
     face_aware: bool = True,
     face_data: list[dict] | None = None,
-    aesthetic_score: float | None = None,
+    maniqa_score: float | None = None,
     musiq_score: float | None = None,
     clipiqa_score: float | None = None,
 ) -> QualityInfo:
@@ -168,7 +168,7 @@ def analyze_image(
     face_data: 预计算的人脸数据（来自 vision.extract_faces），每项含
       bbox=(x1,y1,x2,y2), kps, det_score。传入时直接用，不再重复检测。
     face_aware=False 时完全跳过人脸检测。
-    aesthetic_score / musiq_score / clipiqa_score: 三个互补美学分。
+    maniqa_score / musiq_score / clipiqa_score: 三个互补美学分。
       三个都低于 profile 阈值才会判 low_aesthetic（OR 救回）；
       任一缺失则跳过该规则。
     """
@@ -275,20 +275,20 @@ def analyze_image(
     if face_signals.get("face_clipped"):
         flags.append("face_clipped")
 
-    # 三模型联合美学拒：NIMA + MUSIQ + CLIP-IQA+ 中**至少两个**低于阈值即拒。
+    # 三模型联合美学拒：MANIQA + MUSIQ + CLIP-IQA+ 中**至少两个**低于阈值即拒。
     # 之前是 3-of-3（AND 全部低）→ 实际几乎拒不到任何图，加上 low_aesthetic 又没进
     # hard 列表，等于美学信号完全没参与决策。改 2-of-3 + 进 hard 之后，
     # 美学分明显偏低的"平庸但技术 OK"的图也会被拒——这是 expert 模式应有的能力。
-    nima_low = profile.get("nima_low", 4.7)
+    maniqa_low = profile.get("maniqa_low", 0.45)
     musiq_low = profile.get("musiq_low", 42.0)
     clipiqa_low = profile.get("clipiqa_low", 0.45)
     aesthetic_lows = sum([
-        aesthetic_score is not None and aesthetic_score < nima_low,
+        maniqa_score is not None and maniqa_score < maniqa_low,
         musiq_score is not None and musiq_score < musiq_low,
         clipiqa_score is not None and clipiqa_score < clipiqa_low,
     ])
     aesthetic_available = sum(s is not None for s in
-                              (aesthetic_score, musiq_score, clipiqa_score))
+                              (maniqa_score, musiq_score, clipiqa_score))
     # 至少两个分可用（避免单分误杀），其中 ≥ 2 个低
     if aesthetic_available >= 2 and aesthetic_lows >= 2:
         flags.append("low_aesthetic")
@@ -333,7 +333,7 @@ def analyze_image(
         face_sharpness=round(face_sharp, 3) if face_sharp is not None else None,
         eyes_open_score=round(eyes_score, 4) if eyes_score is not None else None,
         face_clipped=bool(face_signals.get("face_clipped", False)),
-        aesthetic_score=round(aesthetic_score, 2) if aesthetic_score is not None else None,
+        maniqa_score=round(maniqa_score, 4) if maniqa_score is not None else None,
         musiq_score=round(musiq_score, 2) if musiq_score is not None else None,
         clipiqa_score=round(clipiqa_score, 4) if clipiqa_score is not None else None,
         faces_detail=faces_detail,
@@ -353,7 +353,7 @@ def analyze_basic(
         供锦标赛卡片显示和质量分排序使用；
       - 拒片决策完全由 LLM 接管：auto_reject = (llm_verdict == "reject")；
       - flags 仅含 "llm_reject"（如果被 LLM 拒）；
-      - 不跑 NIMA / MUSIQ / CLIP-IQA / 多脸 Laplacian 判定（这些 tycoon 不需要）。
+      - 不跑 MANIQA / MUSIQ / CLIP-IQA / 多脸 Laplacian 判定（这些 tycoon 不需要）。
     """
     width, height = img.size
     gray = img.convert("L")

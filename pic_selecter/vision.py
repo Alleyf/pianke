@@ -1,10 +1,10 @@
-"""专家模式视觉栈：DINOv2 + NIMA + MUSIQ + CLIP-IQA+ + InsightFace 人脸。
+"""专家模式视觉栈：DINOv2 + MANIQA + MUSIQ + CLIP-IQA+ + InsightFace 人脸。
 
 设计原则：**不静默降级**。任何依赖缺失或模型加载失败都直接抛出异常。
 
 模型栈：
 - DINOv2-small：384 维语义特征（分组核心）
-- NIMA (MobileNetV2)：美学评分 1-10（人像/风景偏好）
+- MANIQA (pyiqa)：美学评分 0-1（多任务无参考图像质量评估）
 - MUSIQ (pyiqa)：技术质量评分 0-100（抓拍/纪实友好）
 - CLIP-IQA+ (pyiqa)：LAION 美学评分 0-1（构图偏好）
 - InsightFace：RetinaFace 检测 + ArcFace 512 维人脸嵌入 + 关键点（闭眼检测）
@@ -13,7 +13,7 @@
 - torch >= 2.2
 - torchvision >= 0.17
 - transformers >= 4.40 （DINOv2）
-- pyiqa >= 0.1.10 + timm >= 0.9（MUSIQ / CLIP-IQA+）
+- pyiqa >= 0.1.10 + timm >= 0.9（MANIQA / MUSIQ / CLIP-IQA+）
 - insightface >= 0.7
 - onnxruntime >= 1.16
 """
@@ -113,63 +113,46 @@ def extract_dinov2(pil_img: Image.Image) -> np.ndarray:
 
 
 # =============================================================
-# NIMA 美学评分（MobileNetV2 backbone，独立于 CLIP）
+# MANIQA 美学评分（pyiqa，0-1 范围）
 # =============================================================
 
-def _ensure_nima():
-    if "nima" in _models:
-        return _models["nima"]
+def _ensure_maniqa():
+    if "maniqa" in _models:
+        return _models["maniqa"]
     with _LOCK:
-        if "nima" in _models:
-            return _models["nima"]
+        if "maniqa" in _models:
+            return _models["maniqa"]
         try:
+            import pyiqa  # noqa
             import torch
-            import torch.nn as nn
-            from torchvision import models, transforms
         except ImportError as e:
             raise VisionUnavailable(
-                f"NIMA 依赖缺失：{e}。需要 `pip install torch torchvision`。"
+                f"MANIQA 依赖缺失：{e}。需要 `pip install pyiqa timm`。"
             ) from e
-
-        logger.info("vision: 构建 NIMA 美学评分模型（MobileNetV2 backbone）…")
-        base = models.mobilenet_v2(weights=models.MobileNet_V2_Weights.DEFAULT)
-        base.classifier = nn.Sequential(
-            nn.Dropout(0.75),
-            nn.Linear(base.last_channel, 10),
-            nn.Softmax(dim=1),
-        )
-        base = base.to(_device()).eval()
-
-        preprocess = transforms.Compose([
-            transforms.Resize(256),
-            transforms.CenterCrop(224),
-            transforms.ToTensor(),
-            transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                                 std=[0.229, 0.224, 0.225]),
-        ])
-
-        _models["nima"] = (base, preprocess)
-        logger.info("vision: NIMA 美学模型就绪")
-    return _models["nima"]
+        logger.info("vision: 加载 MANIQA（CPU，美学评分 0-1，首次约 200MB）…")
+        dev = torch.device("cpu")
+        model = pyiqa.create_metric("maniqa", device=dev, as_loss=False)
+        _models["maniqa"] = (model, dev)
+        logger.info("vision: MANIQA 就绪")
+    return _models["maniqa"]
 
 
-def extract_aesthetic_score(pil_img: Image.Image) -> float:
-    """返回美学分 1-10。使用 NIMA 分布均值。"""
+def extract_maniqa_score(pil_img: Image.Image) -> float:
+    """返回 MANIQA 美学分 0-1。CPU + 1024 长边以下输入。"""
     import torch
-    model, preprocess = _ensure_nima()
-    img = preprocess(pil_img.convert("RGB")).unsqueeze(0).to(_device())
+    model, _dev = _ensure_maniqa()
+    img = _resize_for_pyiqa(pil_img)
     with torch.no_grad():
-        probs = model(img).squeeze(0)
-    buckets = torch.arange(1, 11, dtype=torch.float32, device=probs.device)
-    score = float((probs * buckets).sum().item())
-    return max(1.0, min(10.0, score))
+        score = model(img)
+    val = float(score.item() if hasattr(score, "item") else score)
+    return max(0.0, min(1.0, val))
 
 
 # =============================================================
 # pyiqa: MUSIQ（技术质量 0-100）+ CLIP-IQA+（LAION 美学 0-1）
 #
 # **关键：永远跑 CPU + 喂图前 resize 到 1024 长边。**
-# 原因：pyiqa 的 MUSIQ / CLIP-IQA+ 内部不会自动下采样输入。Mac MPS 上喂
+# 原因：pyiqa 的 MUSIQ / CLIP-IQA+ / MANIQA 内部不会自动下采样输入。Mac MPS 上喂
 # 4000 万像素的相机大图 → CLIP patch embedding 申请 34GiB buffer 直接爆。
 # 强制 CPU 避免 MPS OOM；输入 resize 到 1024 长边——MUSIQ 训练在多尺度
 # (384+) 上、CLIP-IQA 用 224×224，1024 远超模型需求，不损失评估精度，
@@ -369,7 +352,7 @@ def compute_eye_open_score(face_info: dict, pil_img: Image.Image) -> float | Non
 
 def capabilities() -> dict:
     """轻量探测——仅尝试 import，不下载权重。"""
-    out = {"dinov2": False, "aesthetic": False, "musiq": False,
+    out = {"dinov2": False, "maniqa": False, "musiq": False,
            "clipiqa": False, "face_id": False}
     try:
         import torch  # noqa
@@ -378,13 +361,8 @@ def capabilities() -> dict:
     except ImportError:
         pass
     try:
-        import torch  # noqa
-        import torchvision  # noqa
-        out["aesthetic"] = True
-    except ImportError:
-        pass
-    try:
         import pyiqa  # noqa
+        out["maniqa"] = True
         out["musiq"] = True
         out["clipiqa"] = True
     except ImportError:
@@ -409,7 +387,7 @@ def require_expert_capabilities() -> None:
 
 
 def require_tycoon_capabilities() -> None:
-    """天眼模式：DINOv2 + InsightFace（分组依赖）必备；NIMA/MUSIQ/CLIP 不要。"""
+    """天眼模式：DINOv2 + InsightFace（分组依赖）必备；MANIQA/MUSIQ/CLIP 不要。"""
     caps = capabilities()
     needed = ["dinov2", "face_id"]
     missing = [k for k in needed if not caps.get(k)]
@@ -425,7 +403,7 @@ def require_tycoon_capabilities() -> None:
 
 EXPERT_STEPS = [
     ("dinov2", "DINOv2 语义特征", "加载 DINOv2 语义模型…"),
-    ("nima", "NIMA 美学评分", "加载 NIMA 美学评分模型…"),
+    ("maniqa", "MANIQA 美学评分", "加载 MANIQA 美学评分模型…"),
     ("musiq", "MUSIQ 技术质量", "加载 MUSIQ 技术质量模型…"),
     ("clipiqa", "CLIP-IQA+ 美学", "加载 CLIP-IQA+ 美学模型…"),
     ("insightface", "InsightFace 人脸", "加载 InsightFace 人脸模型…"),
@@ -444,7 +422,7 @@ def prewarm_all(progress_cb: Callable[[str, int, int], None] | None = None) -> N
     """
     _ensure_map = {
         "dinov2": _ensure_dinov2,
-        "nima": _ensure_nima,
+        "maniqa": _ensure_maniqa,
         "musiq": _ensure_musiq,
         "clipiqa": _ensure_clipiqa,
         "insightface": _ensure_insightface,

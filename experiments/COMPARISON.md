@@ -6,10 +6,10 @@
 
 | 实验 | 引擎 | 力度 | 照片数 | 耗时 | 速度 |
 |------|------|------|--------|------|------|
-| baseline | fast | advanced | 102 | 14.11s | 7.2 张/秒 |
-| maniqa-norm | expert | advanced | 102 | 9.34s | 10.9 张/秒 |
-| u2net-saliency | fast | advanced | 102 | 14.08s | 7.2 张/秒 |
-| wavelet-noise | fast | advanced | 102 | 28.98s | 3.5 张/秒 |
+| baseline | fast | advanced | 102 | 13.52s | 7.5 张/秒 |
+| maniqa-norm | expert | advanced | 102 | 9.76s | 10.5 张/秒 |
+| u2net-saliency | fast | advanced | 102 | 14.64s | 7.0 张/秒 |
+| wavelet-noise | fast | advanced | 102 | 28.95s | 3.5 张/秒 |
 
 ## 核心指标对比
 
