@@ -1,6 +1,7 @@
 .codegraph
 .omc
 .spec-workflow
+.playwright-mcp
 
 # ===== Python =====
 __pycache__/
