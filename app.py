@@ -3864,6 +3864,37 @@ def api_capabilities():
     return jsonify({"face_aware": face})
 
 
+@app.route("/api/check_update")
+def api_check_update():
+    """检查 GitHub 上是否有新版本。"""
+    import urllib.request
+    import urllib.error
+
+    current_version = "0.1.0"
+    repo = "Alleyf/pianke"
+    url = f"https://api.github.com/repos/{repo}/releases/latest"
+
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "pianke-desktop", "Accept": "application/vnd.github.v3+json"})
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        latest_version = data.get("tag_name", "").lstrip("v")
+        has_update = latest_version and latest_version != current_version
+        return jsonify({
+            "current_version": current_version,
+            "latest_version": latest_version or current_version,
+            "has_update": has_update,
+            "release_url": data.get("html_url", ""),
+            "release_notes": data.get("body", ""),
+        })
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            return jsonify({"error": "未找到发布记录"}), 404
+        return jsonify({"error": f"GitHub API 错误：HTTP {e.code}"}), 502
+    except Exception as e:
+        return jsonify({"error": f"检查更新失败：{e}"}), 502
+
+
 @app.route("/api/browse_folder", methods=["POST"])
 def api_browse_folder():
     """调起系统原生选文件夹对话框（macOS: osascript / Win: tkinter / Linux: zenity）。"""

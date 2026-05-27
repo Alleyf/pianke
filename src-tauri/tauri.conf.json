@@ -29,7 +29,7 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["nsis", "dmg", "deb"],
+    "targets": ["nsis", "dmg"],
     "category": "Photography",
     "publisher": "Alleyf & zhaoyue4810",
     "homepage": "https://github.com/Alleyf/pianke",

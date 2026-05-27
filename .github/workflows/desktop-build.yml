@@ -94,9 +94,8 @@ jobs:
             ### 下载
             - **Windows**: 片刻_x64-setup.exe
             - **macOS**: 片刻.dmg
-            - **Linux**: 片刻_amd64.deb
 
-            桌面端仅支持极速模式（fast）。专家/土豪模式请通过 Web 版运行。
+            桌面端支持极速模式、专家、天眼全模式。
           files: |
             artifacts/**/*.exe
             artifacts/**/*.dmg
